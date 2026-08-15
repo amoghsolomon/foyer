@@ -1,0 +1,9 @@
+{
+  "iss": "foyer-server",
+  "aud": "foyer-powersync",
+  "sub": "owner",
+  "deviceKeyId": "cn-I_WNMClehiVp51i_0VpOENW1upEerA8sEam5hn-s",
+  "iat": 1767225660,
+  "exp": 1767225960,
+  "jti": "9e8d7c6b-5a43-4210-9f8e-7d6c5b4a3210"
+}

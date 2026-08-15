@@ -1,0 +1,8 @@
+.local/
+*.age
+*.dump
+*.tar
+*.tar.zst
+*.tar.zst.age
+identity.txt
+age-identity.txt

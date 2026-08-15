@@ -1,0 +1,27 @@
+[package]
+name = "foyer-shell-personal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Shared PowerSync replica owner for hosted personal data. Domain crates keep models and controllers."
+
+[dependencies]
+async-channel.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+foyer-shell-agenda.workspace = true
+foyer-shell-auth.workspace = true
+foyer-shell-bookmarks.workspace = true
+foyer-shell-calendar.workspace = true
+foyer-shell-contacts.workspace = true
+foyer-shell-notes.workspace = true
+foyer-shell-paths.workspace = true
+foyer-shell-tasks.workspace = true
+futures-lite.workspace = true
+powersync.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

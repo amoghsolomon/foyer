@@ -1,0 +1,197 @@
+name: foyer
+
+# Production stack for an image-pulling host such as Dokploy. CI publishes all
+# Foyer images to one GHCR package with service-scoped tags. This file contains
+# no builds, host ports, TLS configuration, or provider credentials.
+services:
+  bootstrap:
+    image: ${FOYER_IMAGE_REGISTRY:-ghcr.io/amoghsolomon/foyer}:bootstrap-${FOYER_IMAGE_VERSION:-main}
+    pull_policy: always
+    restart: "no"
+    environment:
+      FOYER_DAV_PASSWORD: ${FOYER_DAV_PASSWORD:?set FOYER_DAV_PASSWORD in Dokploy}
+    volumes:
+      - foyer_secrets:/secrets
+    security_opt:
+      - no-new-privileges:true
+
+  postgres:
+    image: ${FOYER_IMAGE_REGISTRY:-ghcr.io/amoghsolomon/foyer}:postgres-${FOYER_IMAGE_VERSION:-main}
+    pull_policy: always
+    restart: unless-stopped
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=10
+      - -c
+      - max_wal_senders=10
+    environment:
+      POSTGRES_DB: ${POSTGRES_DATABASE:-foyer}
+      POSTGRES_USER: ${POSTGRES_USER:-foyer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in Dokploy}
+      POWERSYNC_REPLICATION_PASSWORD: ${POWERSYNC_REPLICATION_PASSWORD:?set POWERSYNC_REPLICATION_PASSWORD in Dokploy}
+      POWERSYNC_STORAGE_PASSWORD: ${POWERSYNC_STORAGE_PASSWORD:?set POWERSYNC_STORAGE_PASSWORD in Dokploy}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+
+  radicale:
+    image: ${FOYER_IMAGE_REGISTRY:-ghcr.io/amoghsolomon/foyer}:radicale-${FOYER_IMAGE_VERSION:-main}
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      TZ: UTC
+    expose:
+      - "5232"
+    volumes:
+      - foyer_secrets:/run/secrets/foyer:ro
+      - radicale_data:/var/lib/radicale
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/app/bin/python",
+          "-c",
+          "import socket; s=socket.create_connection(('127.0.0.1',5232),2); s.close()",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  server:
+    image: ${FOYER_IMAGE_REGISTRY:-ghcr.io/amoghsolomon/foyer}:server-${FOYER_IMAGE_VERSION:-main}
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      FOYER_SERVER_BIND: 0.0.0.0:3583
+      FOYER_SERVER_HEALTH_ADDR: 127.0.0.1:3583
+      FOYER_DATABASE_URL: postgres://${POSTGRES_USER:-foyer}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in Dokploy}@postgres:5432/${POSTGRES_DATABASE:-foyer}
+      FOYER_SERVER_ENV: production
+      FOYER_AUTH_SIGNING_KEY_PATH: /run/secrets/foyer/token-signing.pem
+      FOYER_AUTH_KEY_ID: ${FOYER_AUTH_KEY_ID:?set FOYER_AUTH_KEY_ID in Dokploy}
+      FOYER_AUTH_ISSUER: ${FOYER_AUTH_ISSUER:-https://api.foyer.i0t.in}
+      FOYER_AUTH_API_AUDIENCE: ${FOYER_AUTH_API_AUDIENCE:-foyer-api}
+      FOYER_POWERSYNC_URL: ${FOYER_POWERSYNC_URL:-https://sync.foyer.i0t.in}
+      FOYER_POWERSYNC_AUDIENCE: ${FOYER_POWERSYNC_AUDIENCE:-foyer-powersync}
+      FOYER_DAV_URL: http://radicale:5232
+      FOYER_DAV_USERNAME: foyer
+      FOYER_DAV_PASSWORD: ${FOYER_DAV_PASSWORD:?set FOYER_DAV_PASSWORD in Dokploy}
+      RUST_LOG: ${RUST_LOG:-info}
+    expose:
+      - "3583"
+    volumes:
+      - foyer_secrets:/run/secrets/foyer:ro
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      radicale:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "foyer-server", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    networks:
+      - default
+      - edge
+    security_opt:
+      - no-new-privileges:true
+
+  powersync:
+    image: ${FOYER_IMAGE_REGISTRY:-ghcr.io/amoghsolomon/foyer}:powersync-${FOYER_IMAGE_VERSION:-main}
+    pull_policy: always
+    restart: unless-stopped
+    command: ["start"]
+    environment:
+      POWERSYNC_CONFIG_PATH: /config/config.yaml
+      PS_SOURCE_DATABASE: ${POSTGRES_DATABASE:-foyer}
+      PS_SOURCE_PASSWORD: ${POWERSYNC_REPLICATION_PASSWORD:?set POWERSYNC_REPLICATION_PASSWORD in Dokploy}
+      PS_STORAGE_PASSWORD: ${POWERSYNC_STORAGE_PASSWORD:?set POWERSYNC_STORAGE_PASSWORD in Dokploy}
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      server:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/probes/liveness').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 15
+      start_period: 20s
+    networks:
+      - default
+      - edge
+    security_opt:
+      - no-new-privileges:true
+
+  # Invoked explicitly by the portable host wrapper; never starts with the
+  # application stack and never receives a Docker socket.
+  backup:
+    profiles: ["backup"]
+    image: ${FOYER_IMAGE_REGISTRY:-ghcr.io/amoghsolomon/foyer}:backup-${FOYER_IMAGE_VERSION:-main}
+    pull_policy: always
+    restart: "no"
+    init: true
+    environment:
+      FOYER_BACKUP_POSTGRES_HOST: postgres
+      FOYER_BACKUP_POSTGRES_PORT: "5432"
+      FOYER_BACKUP_POSTGRES_DB: ${POSTGRES_DATABASE:-foyer}
+      FOYER_BACKUP_POSTGRES_USER: ${POSTGRES_USER:-foyer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in Dokploy}
+      FOYER_BACKUP_AGE_RECIPIENT: ${FOYER_BACKUP_AGE_RECIPIENT:-}
+      FOYER_BACKUP_S3_ENDPOINT: ${FOYER_BACKUP_S3_ENDPOINT:-}
+      FOYER_BACKUP_S3_REGION: ${FOYER_BACKUP_S3_REGION:-auto}
+      FOYER_BACKUP_S3_BUCKET: ${FOYER_BACKUP_S3_BUCKET:-}
+      FOYER_BACKUP_S3_PREFIX: ${FOYER_BACKUP_S3_PREFIX:-foyer/}
+      FOYER_BACKUP_S3_ACCESS_KEY: ${FOYER_BACKUP_S3_ACCESS_KEY:-}
+      FOYER_BACKUP_S3_SECRET_KEY: ${FOYER_BACKUP_S3_SECRET_KEY:-}
+      FOYER_BACKUP_S3_SESSION_TOKEN: ${FOYER_BACKUP_S3_SESSION_TOKEN:-}
+      FOYER_BACKUP_S3_ADDRESSING: ${FOYER_BACKUP_S3_ADDRESSING:-path}
+      FOYER_RADICALE_IMAGE: ${FOYER_IMAGE_REGISTRY:-ghcr.io/amoghsolomon/foyer}:radicale-${FOYER_IMAGE_VERSION:-main}
+    volumes:
+      - foyer_secrets:/secrets:ro
+      - radicale_data:/var/lib/radicale:ro
+    tmpfs:
+      - /tmp:mode=0700
+    working_dir: /backup
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  edge:
+    external: true
+    name: ${FOYER_EDGE_NETWORK:-dokploy-network}
+
+volumes:
+  foyer_secrets:
+    name: foyer-secrets
+  postgres_data:
+    name: foyer-postgres-data
+  radicale_data:
+    name: foyer-radicale-data

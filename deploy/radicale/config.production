@@ -1,0 +1,58 @@
+# Radicale 3.7.3 production configuration for Foyer. Static policy is baked
+# into the image; the bcrypt service credential comes from foyer-secrets.
+
+[server]
+hosts = 0.0.0.0:5232
+max_connections = 16
+delay_on_error = 1
+max_content_length = 10485760
+max_resource_size = 262144
+timeout = 30
+ssl = False
+
+[encoding]
+request = utf-8
+stock = utf-8
+
+[auth]
+type = htpasswd
+htpasswd_filename = /run/secrets/foyer/radicale-users
+htpasswd_encryption = bcrypt
+htpasswd_cache = True
+delay = 1
+realm = Foyer DAV
+lc_username = False
+strip_domain = False
+urldecode_username = False
+
+[rights]
+type = from_file
+file = /etc/radicale/rights
+permit_delete_collection = True
+permit_overwrite_collection = True
+
+[storage]
+type = multifilesystem
+filesystem_folder = /var/lib/radicale/collections
+skip_broken_item = True
+strict_preconditions = True
+max_sync_token_age = 2592000
+folder_umask = 0077
+
+[web]
+type = none
+
+[logging]
+level = info
+mask_passwords = True
+bad_put_request_content = False
+request_header_on_debug = False
+request_content_on_debug = False
+response_header_on_debug = False
+response_content_on_debug = False
+
+[headers]
+Content-Security-Policy = default-src 'self'; object-src 'none'
+
+[sharing]
+type = none

@@ -1,0 +1,11 @@
+{$FOYER_DOMAIN:localhost} {
+    encode zstd gzip
+    reverse_proxy server:3583
+}
+
+# Production DAV is reverse-proxied only. Development publishes 127.0.0.1:5232
+# instead. Uncomment to expose Radicale through Caddy; Foyer clients still must
+# not receive DAV credentials.
+# dav.{$FOYER_DOMAIN:localhost} {
+#     reverse_proxy radicale:5232
+# }

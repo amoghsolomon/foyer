@@ -1,0 +1,704 @@
+#!/usr/bin/env bash
+# Foyer canonical backup/restore tool. Runs inside the backup image.
+set -euo pipefail
+
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib.sh
+. "${SCRIPT_DIR}/lib.sh"
+
+umask 077
+export LC_ALL=C
+
+STAGING_ROOT="${FOYER_BACKUP_STAGING:-/staging}"
+SECRETS_SOURCE="${FOYER_BACKUP_SECRETS_MOUNT:-/secrets}"
+RADICALE_SOURCE="${FOYER_BACKUP_RADICALE_MOUNT:-/var/lib/radicale}"
+S3_PY="${SCRIPT_DIR}/s3.py"
+
+KEEP_STAGING=0
+
+cleanup_staging() {
+  if [ "${KEEP_STAGING}" = "1" ]; then
+    return 0
+  fi
+  if [ -d "${STAGING_ROOT}" ]; then
+    wipe_bounded_dir "${STAGING_ROOT}" keep-root || true
+  fi
+}
+
+install_cleanup() {
+  trap cleanup_staging EXIT INT HUP TERM
+}
+
+usage() {
+  cat <<'EOF'
+usage: foyer-backup <command>
+
+commands:
+  stage             dump PostgreSQL, archive quiesced Radicale, copy secrets
+  seal              compress, encrypt to the age recipient, upload, wipe staging
+  create            stage then seal (caller must already have quiesced writers)
+  list              list uploaded objects
+  download KEY OUT  download one object to an explicit path
+  verify [KEY|FILE] decrypt, unpack, and validate without mutating targets
+  restore           verify then restore into explicit empty or isolated targets
+  ensure-bucket     create the configured bucket if it is missing
+  wipe-staging      remove the bounded staging directory
+  age-keygen DIR    write a local test identity and recipient into DIR
+EOF
+}
+
+bundle_name() {
+  printf '%s-%s' "${FOYER_BACKUP_BUNDLE_PREFIX}" "${FOYER_BACKUP_TIMESTAMP:?}"
+}
+
+bundle_dir() {
+  printf '%s/%s' "${STAGING_ROOT}" "$(bundle_name)"
+}
+
+require_staging_root() {
+  mkdir -p "${STAGING_ROOT}"
+  chmod 700 "${STAGING_ROOT}"
+  assert_safe_target "${STAGING_ROOT}" "staging" >/dev/null
+}
+
+copy_secrets() {
+  local dest="$1"
+  local count=0
+  mkdir -p "${dest}"
+  chmod 700 "${dest}"
+  if [ ! -d "${SECRETS_SOURCE}" ]; then
+    die "secrets mount is missing"
+  fi
+  if dir_is_empty "${SECRETS_SOURCE}"; then
+    die "secrets mount is empty; refusing an incomplete canonical backup"
+  fi
+  local file extra
+  while IFS= read -r file; do
+    [ -n "${file}" ] || continue
+    if is_identity_filename "${file}"; then
+      die "refusing to copy an age identity or similarly named secret-recovery file"
+    fi
+    cp -p -- "${file}" "${dest}/$(basename -- "${file}")"
+    chmod 600 "${dest}/$(basename -- "${file}")"
+    count=$((count + 1))
+  done < <(find "${SECRETS_SOURCE}" -maxdepth 1 -type f -print | sort)
+  while IFS= read -r extra; do
+    [ -n "${extra}" ] || continue
+    die "secrets directory must contain only regular files: $(basename -- "${extra}")"
+  done < <(find "${SECRETS_SOURCE}" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print)
+  log "copied ${count} secret file(s) from the narrowly mounted directory"
+}
+
+stage_postgres() {
+  local dest="$1"
+  require_cmd pg_dump
+  export_postgres_env
+  mkdir -p "$(dirname -- "${dest}")"
+  if ! pg_isready -q; then
+    clear_postgres_env
+    die "PostgreSQL is not ready"
+  fi
+  pg_dump \
+    --format=custom \
+    --no-owner \
+    --no-acl \
+    --compress=0 \
+    --file="${dest}"
+  clear_postgres_env
+  chmod 600 "${dest}"
+  log "staged PostgreSQL custom-format dump"
+}
+
+stage_radicale() {
+  local dest="$1"
+  require_cmd tar
+  mkdir -p "$(dirname -- "${dest}")"
+  if [ ! -d "${RADICALE_SOURCE}" ]; then
+    die "Radicale mount is missing"
+  fi
+  tar --numeric-owner -C "${RADICALE_SOURCE}" -cf "${dest}" .
+  chmod 600 "${dest}"
+  log "staged quiesced Radicale storage archive"
+}
+
+postgres_server_version() {
+  export_postgres_env
+  psql -X -Atqc 'SHOW server_version;' || true
+  clear_postgres_env
+}
+
+sqlx_migrations_json() {
+  export_postgres_env
+  if ! psql -X -Atqc "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='_sqlx_migrations'" | grep -q 1; then
+    printf '[]'
+    clear_postgres_env
+    return 0
+  fi
+  psql -X -Atqc "SELECT COALESCE(json_agg(row_to_json(m) ORDER BY version), '[]'::json)
+                 FROM (
+                   SELECT version::text AS version, description
+                   FROM _sqlx_migrations
+                 ) m"
+  clear_postgres_env
+}
+
+write_manifest() {
+  local dest="$1"
+  local bundle="$2"
+  local created file rel size digest
+  created=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  python3 - "${dest}" "${bundle}" "${created}" \
+    "${FOYER_BACKUP_FORMAT}" "${FOYER_BACKUP_FORMAT_VERSION}" \
+    "$(postgres_server_version)" \
+    "$(sqlx_migrations_json)" \
+    "${FOYER_SERVER_VERSION:-unknown}" \
+    "${FOYER_RADICALE_IMAGE:-kozea/radicale:3.7.3}" \
+    <<'PY'
+import hashlib, json, os, sys
+
+dest, bundle, created, fmt, fmt_ver, pg_ver, migrations, server_ver, radicale = sys.argv[1:]
+try:
+    migrations_obj = json.loads(migrations or "[]")
+except json.JSONDecodeError:
+    migrations_obj = []
+
+files = []
+for root, _, names in os.walk(bundle):
+    for name in sorted(names):
+        path = os.path.join(root, name)
+        rel = os.path.relpath(path, bundle)
+        if rel == "manifest.json":
+            continue
+        digest = hashlib.sha256()
+        size = 0
+        with open(path, "rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                size += len(chunk)
+        if rel.startswith("postgres/"):
+            authority = "postgresql"
+        elif rel.startswith("radicale/"):
+            authority = "radicale"
+        elif rel.startswith("secrets/"):
+            authority = "secrets"
+        else:
+            raise SystemExit(f"unexpected staged file {rel}")
+        files.append({
+            "path": rel.replace("\\", "/"),
+            "authority": authority,
+            "size": size,
+            "sha256": digest.hexdigest(),
+        })
+
+pg_major = None
+for token in (pg_ver or "").split():
+    if token[0].isdigit():
+        pg_major = int(token.split(".")[0])
+        break
+
+authorities = sorted({item["authority"] for item in files})
+manifest = {
+    "format": fmt,
+    "format_version": int(fmt_ver),
+    "created_at": created,
+    "bundle_id": os.path.basename(bundle),
+    "authorities": authorities,
+    "schema": {
+        "postgres_version": pg_ver,
+        "postgres_major": pg_major,
+        "sqlx_migrations": migrations_obj,
+        "foyer_server_version": server_ver,
+        "radicale_image": radicale,
+        "backup_format": fmt,
+        "backup_format_version": int(fmt_ver),
+    },
+    "files": files,
+}
+with open(dest, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PY
+  chmod 600 "${dest}"
+  log "wrote versioned manifest"
+}
+
+cmd_stage() {
+  install_cleanup
+  require_staging_root
+  require_cmd pg_dump tar sha256sum python3 date
+  FOYER_BACKUP_TIMESTAMP="${FOYER_BACKUP_TIMESTAMP:-$(utc_stamp)}"
+  export FOYER_BACKUP_TIMESTAMP
+  local bundle dest
+  bundle=$(bundle_dir)
+  wipe_bounded_dir "${STAGING_ROOT}" keep-root
+  mkdir -p "${bundle}/postgres" "${bundle}/radicale" "${bundle}/secrets"
+  chmod 700 "${bundle}" "${bundle}/postgres" "${bundle}/radicale" "${bundle}/secrets"
+  stage_postgres "${bundle}/postgres/foyer.dump"
+  stage_radicale "${bundle}/radicale/storage.tar"
+  copy_secrets "${bundle}/secrets"
+  write_manifest "${bundle}/manifest.json" "${bundle}"
+  printf '%s\n' "$(bundle_name)" > "${STAGING_ROOT}/CURRENT"
+  chmod 600 "${STAGING_ROOT}/CURRENT"
+  KEEP_STAGING=1
+  log "staging complete: $(bundle_name)"
+}
+
+cmd_seal() {
+  install_cleanup
+  require_cmd tar zstd age python3
+  require_staging_root
+  local name bundle archive encrypted recipient key
+  [ -f "${STAGING_ROOT}/CURRENT" ] || die "no staged bundle; run stage first"
+  name=$(tr -d '\r\n' < "${STAGING_ROOT}/CURRENT")
+  bundle="${STAGING_ROOT}/${name}"
+  [ -d "${bundle}" ] || die "staged bundle directory is missing"
+  [ -f "${bundle}/manifest.json" ] || die "staged manifest is missing"
+  recipient=$(age_recipient)
+  archive="${STAGING_ROOT}/${name}.tar.zst"
+  encrypted="${STAGING_ROOT}/${name}.tar.zst.age"
+  tar --numeric-owner -C "${bundle}" -cf - . | zstd -q -10 -o "${archive}"
+  chmod 600 "${archive}"
+  age -r "${recipient}" -o "${encrypted}" "${archive}"
+  chmod 600 "${encrypted}"
+  rm -f -- "${archive}"
+  key=$(object_key_for_bundle "${name}")
+  python3 "${S3_PY}" put "${encrypted}" "${key}"
+  log "uploaded encrypted bundle object"
+  wipe_bounded_dir "${STAGING_ROOT}" keep-root
+  printf '%s\n' "${key}"
+}
+
+cmd_create() {
+  cmd_stage
+  KEEP_STAGING=0
+  cmd_seal
+}
+
+cmd_list() {
+  python3 "${S3_PY}" list "$(s3_prefix)"
+}
+
+cmd_ensure_bucket() {
+  python3 "${S3_PY}" ensure-bucket
+}
+
+cmd_download() {
+  local key out
+  [ "${#}" -eq 2 ] || die "usage: foyer-backup download KEY OUT"
+  key=$(validate_object_key "$1")
+  out=$(assert_safe_target "$2" "download output" "${FOYER_RESTORE_ISOLATED:-0}")
+  if [ -e "${out}" ]; then
+    die "download output already exists"
+  fi
+  mkdir -p "$(dirname -- "${out}")"
+  python3 "${S3_PY}" get "${key}" "${out}"
+  log "downloaded object to the explicit output path"
+}
+
+unpack_bundle() {
+  local source dest identity
+  source="$1"
+  dest="$2"
+  identity=$(require_age_identity_file)
+  mkdir -p "${dest}"
+  chmod 700 "${dest}"
+  age -d -i "${identity}" -o "${dest}/bundle.tar.zst" "${source}"
+  mkdir -p "${dest}/bundle"
+  zstd -d -q -o "${dest}/bundle.tar" "${dest}/bundle.tar.zst"
+  python3 - "${dest}/bundle.tar" "${dest}/bundle" <<'PY'
+import pathlib, sys, tarfile
+
+archive_path, destination = sys.argv[1:]
+with tarfile.open(archive_path, "r:") as archive:
+    for member in archive.getmembers():
+        path = pathlib.PurePosixPath(member.name)
+        if path.is_absolute() or ".." in path.parts:
+            raise SystemExit("outer bundle archive contains an unsafe path")
+        if not (member.isfile() or member.isdir()):
+            raise SystemExit("outer bundle archive contains a non-file entry")
+    # Every member was constrained to a relative regular file/directory above,
+    # so extraction is safe on Python versions predating tarfile's data filter.
+    archive.extractall(destination)
+PY
+  rm -f -- "${dest}/bundle.tar.zst" "${dest}/bundle.tar"
+}
+
+validate_unpacked() {
+  local bundle manifest
+  bundle="$1"
+  manifest="${bundle}/manifest.json"
+  [ -f "${manifest}" ] || die "bundle manifest is missing"
+  python3 - "${manifest}" "${bundle}" "${FOYER_BACKUP_FORMAT}" "${FOYER_BACKUP_FORMAT_VERSION}" <<'PY'
+import hashlib, json, os, pathlib, sys, tarfile
+
+manifest_path, bundle, expected_format, expected_version = sys.argv[1:]
+with open(manifest_path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+if manifest.get("format") != expected_format:
+    raise SystemExit("manifest format is not a Foyer canonical backup")
+if int(manifest.get("format_version", -1)) != int(expected_version):
+    raise SystemExit("unsupported backup format version")
+if not manifest.get("created_at"):
+    raise SystemExit("manifest is missing created_at")
+if not manifest.get("authorities"):
+    raise SystemExit("manifest is missing authorities")
+required = {"postgresql", "radicale", "secrets"}
+have = set(manifest.get("authorities") or [])
+missing = required - have
+if missing:
+    raise SystemExit("manifest is missing required authorities: " + ", ".join(sorted(missing)))
+schema = manifest.get("schema") or {}
+if not isinstance(schema, dict):
+    raise SystemExit("manifest schema is missing")
+if "postgres_version" not in schema and "postgres_major" not in schema:
+    raise SystemExit("manifest schema is missing PostgreSQL version")
+files = manifest.get("files") or []
+if not files:
+    raise SystemExit("manifest file list is empty")
+seen = set()
+required_paths = {"postgres/foyer.dump", "radicale/storage.tar"}
+for item in files:
+    rel = item.get("path")
+    if not rel or rel.startswith("/") or ".." in rel.split("/"):
+        raise SystemExit("manifest contains an unsafe file path")
+    path = os.path.join(bundle, rel)
+    if not os.path.isfile(path):
+        raise SystemExit(f"bundle is missing {rel}")
+    digest = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+    if size != int(item.get("size", -1)):
+        raise SystemExit(f"size mismatch for {rel}")
+    if digest.hexdigest() != item.get("sha256"):
+        raise SystemExit(f"checksum mismatch for {rel}")
+    seen.add(rel)
+for root, _, names in os.walk(bundle):
+    for name in names:
+        rel = os.path.relpath(os.path.join(root, name), bundle).replace("\\", "/")
+        if rel == "manifest.json":
+            continue
+        if rel not in seen:
+            raise SystemExit(f"unlisted file in bundle: {rel}")
+missing_paths = required_paths - seen
+if missing_paths:
+    raise SystemExit("bundle is missing required files: " + ", ".join(sorted(missing_paths)))
+if not any(item.get("authority") == "secrets" for item in files):
+    raise SystemExit("bundle contains no recoverable secret files")
+radicale_archive = os.path.join(bundle, "radicale", "storage.tar")
+with tarfile.open(radicale_archive, "r:") as archive:
+    for member in archive.getmembers():
+        path = pathlib.PurePosixPath(member.name)
+        if path.is_absolute() or ".." in path.parts:
+            raise SystemExit("Radicale archive contains an unsafe path")
+        if not (member.isfile() or member.isdir()):
+            raise SystemExit("Radicale archive contains a non-file entry")
+print(manifest.get("bundle_id", "unknown"))
+PY
+}
+
+assert_restore_schema() {
+  local manifest="$1"
+  python3 - "${manifest}" <<'PY'
+import json, os, sys
+
+manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+schema = manifest.get("schema") or {}
+major = schema.get("postgres_major")
+expected = os.environ.get("FOYER_RESTORE_POSTGRES_MAJOR", "").strip()
+if expected and major is not None and int(major) > int(expected):
+    raise SystemExit(
+        f"bundle PostgreSQL major {major} is newer than restore target {expected}"
+    )
+PY
+}
+
+cmd_verify() {
+  install_cleanup
+  require_cmd age zstd tar python3
+  require_staging_root
+  local source key work
+  if [ "${#}" -lt 1 ]; then
+    die "usage: foyer-backup verify KEY|FILE"
+  fi
+  source=$1
+  work="${STAGING_ROOT}/verify"
+  wipe_bounded_dir "${STAGING_ROOT}" keep-root
+  mkdir -p "${work}"
+  if [ -f "${source}" ]; then
+    source=$(assert_safe_target "${source}" "bundle file" "${FOYER_RESTORE_ISOLATED:-0}")
+    unpack_bundle "${source}" "${work}"
+  else
+    key=$(validate_object_key "${source}")
+    python3 "${S3_PY}" get "${key}" "${work}/bundle.tar.zst.age"
+    unpack_bundle "${work}/bundle.tar.zst.age" "${work}"
+  fi
+  validate_unpacked "${work}/bundle"
+  log "bundle verified"
+  if [ "${FOYER_BACKUP_KEEP_VERIFY:-0}" = "1" ]; then
+    printf '%s\n' "${work}/bundle"
+  fi
+}
+
+postgres_has_user_tables() {
+  local host="$1"
+  local saved_host="${FOYER_BACKUP_POSTGRES_HOST:-}"
+  FOYER_BACKUP_POSTGRES_HOST="${host}"
+  export FOYER_BACKUP_POSTGRES_HOST
+  export_postgres_env
+  local count
+  count=$(psql -X -Atqc "SELECT count(*) FROM information_schema.tables
+                         WHERE table_schema='public'
+                           AND table_type='BASE TABLE'")
+  clear_postgres_env
+  FOYER_BACKUP_POSTGRES_HOST="${saved_host}"
+  [ "${count}" != "0" ]
+}
+
+assert_restore_targets() {
+  local isolated pg_host radicale_dir secrets_dir
+  isolated="${FOYER_RESTORE_ISOLATED:-0}"
+  pg_host="${FOYER_RESTORE_POSTGRES_HOST:-}"
+  radicale_dir="${FOYER_RESTORE_RADICALE_DIR:-}"
+  secrets_dir="${FOYER_RESTORE_SECRETS_DIR:-}"
+  [ -n "${pg_host}" ] || die "FOYER_RESTORE_POSTGRES_HOST must be set explicitly"
+  [ -n "${radicale_dir}" ] || die "FOYER_RESTORE_RADICALE_DIR must be set explicitly"
+  [ -n "${secrets_dir}" ] || die "FOYER_RESTORE_SECRETS_DIR must be set explicitly"
+  case "${pg_host}" in
+    *'*'*|*'/'*|*..*)
+      die "PostgreSQL restore host is invalid"
+      ;;
+  esac
+  radicale_dir=$(assert_safe_target "${radicale_dir}" "Radicale restore" "${isolated}")
+  secrets_dir=$(assert_safe_target "${secrets_dir}" "secrets restore" "${isolated}")
+  assert_not_source_volume "${radicale_dir}"
+  assert_not_source_volume "${secrets_dir}"
+  if [ "${isolated}" = "1" ]; then
+    case "${pg_host}" in
+      restore-test-postgres) ;;
+      *)
+        die "isolated restore refuses the live/unlisted PostgreSQL host"
+        ;;
+    esac
+    case "${radicale_dir}" in
+      /restore/radicale|/restore/radicale/*) ;;
+      *)
+        die "isolated restore refuses a non-test Radicale target"
+        ;;
+    esac
+    case "${secrets_dir}" in
+      /restore/secrets|/restore/secrets/*|/var/tmp/foyer-restore-test.*) ;;
+      *)
+        die "isolated restore refuses a non-test secrets target"
+        ;;
+    esac
+    if [ "${pg_host}" = "postgres" ]; then
+      die "isolated restore refuses the live PostgreSQL service"
+    fi
+  else
+    if postgres_has_user_tables "${pg_host}"; then
+      die "PostgreSQL restore target is not empty; refusing without isolated mode"
+    fi
+    if ! dir_is_empty "${radicale_dir}"; then
+      die "Radicale restore target is not empty; refusing without isolated mode"
+    fi
+    if ! dir_is_empty "${secrets_dir}"; then
+      die "secrets restore target is not empty; refusing without isolated mode"
+    fi
+  fi
+  FOYER_RESTORE_RADICALE_DIR="${radicale_dir}"
+  FOYER_RESTORE_SECRETS_DIR="${secrets_dir}"
+  export FOYER_RESTORE_RADICALE_DIR FOYER_RESTORE_SECRETS_DIR
+}
+
+restore_postgres() {
+  local dump host
+  dump="$1"
+  host="${FOYER_RESTORE_POSTGRES_HOST}"
+  require_cmd pg_restore psql
+  FOYER_BACKUP_POSTGRES_HOST="${host}"
+  export_postgres_env
+  if ! pg_isready -q; then
+    clear_postgres_env
+    die "restore PostgreSQL is not ready"
+  fi
+  if [ "${FOYER_RESTORE_ISOLATED:-0}" = "1" ]; then
+    psql -X -v ON_ERROR_STOP=1 -d postgres \
+      -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${PGDATABASE}' AND pid <> pg_backend_pid();" \
+      >/dev/null || true
+    psql -X -v ON_ERROR_STOP=1 -d postgres \
+      -c "DROP DATABASE IF EXISTS \"${PGDATABASE}\";"
+    psql -X -v ON_ERROR_STOP=1 -d postgres \
+      -c "CREATE DATABASE \"${PGDATABASE}\" OWNER \"${PGUSER}\";"
+  fi
+  pg_restore \
+    --no-owner \
+    --no-acl \
+    --exit-on-error \
+    --dbname="${PGDATABASE}" \
+    "${dump}"
+  clear_postgres_env
+  log "restored PostgreSQL with pg_restore"
+}
+
+restore_radicale() {
+  local archive dest
+  archive="$1"
+  dest="${FOYER_RESTORE_RADICALE_DIR}"
+  mkdir -p "${dest}"
+  if [ "${FOYER_RESTORE_ISOLATED:-0}" = "1" ]; then
+    find "${dest}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+  fi
+  tar --numeric-owner -C "${dest}" -xf "${archive}"
+  log "restored Radicale storage archive"
+}
+
+restore_secrets() {
+  local source dest
+  source="$1"
+  dest="${FOYER_RESTORE_SECRETS_DIR}"
+  mkdir -p "${dest}"
+  chmod 700 "${dest}"
+  if [ "${FOYER_RESTORE_ISOLATED:-0}" = "1" ]; then
+    find "${dest}" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+  fi
+  if [ -d "${source}" ] && ! dir_is_empty "${source}"; then
+    while IFS= read -r file; do
+      [ -n "${file}" ] || continue
+      cp -p -- "${file}" "${dest}/$(basename -- "${file}")"
+      chmod 600 "${dest}/$(basename -- "${file}")"
+    done < <(find "${source}" -maxdepth 1 -type f -print | sort)
+  fi
+  log "restored secret files to the explicit target"
+}
+
+maybe_rebuild_projections() {
+  [ "${FOYER_RESTORE_REBUILD_PROJECTIONS:-0}" = "1" ] || return 0
+  FOYER_BACKUP_POSTGRES_HOST="${FOYER_RESTORE_POSTGRES_HOST}"
+  export_postgres_env
+  psql -X -v ON_ERROR_STOP=1 <<'SQL' || true
+DO $$
+DECLARE
+  proj text;
+BEGIN
+  FOREACH proj IN ARRAY ARRAY[
+    'dav_collection_checkpoints',
+    'task_lists',
+    'tasks',
+    'tasks_operations',
+    'tasks_dav_checkpoints',
+    'contacts_address_books',
+    'contacts',
+    'contacts_operations',
+    'contacts_projection_checkpoints',
+    'calendar_calendars',
+    'calendar_events',
+    'calendar_event_payloads',
+    'calendar_operations',
+    'calendar_projection_checkpoints'
+  ]
+  LOOP
+    IF EXISTS (
+      SELECT 1 FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = proj
+    ) THEN
+      EXECUTE format('TRUNCATE TABLE %I CASCADE', proj);
+    END IF;
+  END LOOP;
+END
+$$;
+SQL
+  clear_postgres_env
+  log "truncated rebuildable DAV projection tables when present"
+}
+
+cmd_restore() {
+  install_cleanup
+  require_cmd age zstd tar pg_restore psql python3
+  require_staging_root
+  local source work
+  [ "${#}" -ge 1 ] || die "usage: foyer-backup restore KEY|FILE"
+  assert_restore_targets
+  source=$1
+  work="${STAGING_ROOT}/restore"
+  wipe_bounded_dir "${STAGING_ROOT}" keep-root
+  mkdir -p "${work}"
+  if [ -f "${source}" ]; then
+    source=$(assert_safe_target "${source}" "bundle file" "${FOYER_RESTORE_ISOLATED:-0}")
+    unpack_bundle "${source}" "${work}"
+  else
+    python3 "${S3_PY}" get "$(validate_object_key "${source}")" "${work}/bundle.tar.zst.age"
+    unpack_bundle "${work}/bundle.tar.zst.age" "${work}"
+  fi
+  validate_unpacked "${work}/bundle"
+  FOYER_BACKUP_POSTGRES_HOST="${FOYER_RESTORE_POSTGRES_HOST}"
+  export FOYER_BACKUP_POSTGRES_HOST
+  FOYER_RESTORE_POSTGRES_MAJOR=$(postgres_server_version | awk '{print $1}' | cut -d. -f1)
+  export FOYER_RESTORE_POSTGRES_MAJOR
+  assert_restore_schema "${work}/bundle/manifest.json"
+  log "validation complete; beginning target mutation"
+  restore_postgres "${work}/bundle/postgres/foyer.dump"
+  restore_radicale "${work}/bundle/radicale/storage.tar"
+  restore_secrets "${work}/bundle/secrets"
+  maybe_rebuild_projections
+  wipe_bounded_dir "${STAGING_ROOT}" keep-root
+  log "restore complete"
+}
+
+cmd_wipe_staging() {
+  wipe_bounded_dir "${STAGING_ROOT}" keep-root
+}
+
+cmd_age_keygen() {
+  local dest
+  [ "${#}" -eq 1 ] || die "usage: foyer-backup age-keygen DIR"
+  dest=$(assert_safe_target "$1" "age identity directory" 1)
+  mkdir -p "${dest}"
+  chmod 700 "${dest}"
+  if [ -e "${dest}/age-identity.txt" ] || [ -e "${dest}/age-recipient.txt" ]; then
+    die "age identity already exists in the target directory"
+  fi
+  age-keygen -o "${dest}/age-identity.txt"
+  chmod 600 "${dest}/age-identity.txt"
+  age-keygen -y "${dest}/age-identity.txt" > "${dest}/age-recipient.txt"
+  chmod 600 "${dest}/age-recipient.txt"
+  log "wrote local test age identity and recipient"
+}
+
+main() {
+  if [ "${#}" -lt 1 ]; then
+    usage
+    exit 2
+  fi
+  local command=$1
+  shift
+  case "${command}" in
+    stage) cmd_stage "$@" ;;
+    seal) cmd_seal "$@" ;;
+    create) cmd_create "$@" ;;
+    list) cmd_list "$@" ;;
+    download) cmd_download "$@" ;;
+    verify) cmd_verify "$@" ;;
+    restore) cmd_restore "$@" ;;
+    ensure-bucket) cmd_ensure_bucket "$@" ;;
+    wipe-staging) cmd_wipe_staging "$@" ;;
+    age-keygen) cmd_age_keygen "$@" ;;
+    -h|--help|help) usage ;;
+    *)
+      usage
+      die "unknown command"
+      ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

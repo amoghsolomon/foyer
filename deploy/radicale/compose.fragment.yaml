@@ -1,0 +1,5 @@
+# Historical fragment. The official `kozea/radicale:3.7.3` service now lives in
+# deploy/compose.yaml. Do not publish 5232 on the host in production; only the
+# reverse proxy should expose DAV. First-party clients must not receive these
+# credentials. Production must set RADICALE_HTPASSWD_FILE to a private bcrypt
+# htpasswd and must not use users.dev.

@@ -1,0 +1,5 @@
+# Copy to a host-local htpasswd file that is not committed.
+#   htpasswd -B -c users foyer
+#   htpasswd -B users "$FOYER_DEV_USER_ID"
+# Point compose at the file with RADICALE_HTPASSWD_FILE.
+# The `foyer` user is the Foyer Server service account only.

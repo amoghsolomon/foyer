@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="300" viewBox="0 0 720 300">
+  <rect width="720" height="300" rx="24" fill="#09090b"/>
+  <path d="M72 222 C152 212 180 188 252 180 S374 158 430 132 S548 84 648 72" fill="none" stroke="#3b82f6" stroke-width="7" stroke-linecap="round"/>
+  <path d="M72 222 C162 216 218 215 294 211 S474 203 648 194" fill="none" stroke="#27272a" stroke-width="5" stroke-linecap="round" stroke-dasharray="10 12"/>
+  <circle cx="430" cy="132" r="10" fill="#22c55e"/>
+  <text x="72" y="56" fill="#fafafa" font-family="Inter, sans-serif" font-size="24" font-weight="600">Startup path</text>
+  <text x="72" y="82" fill="#a1a1aa" font-family="Inter, sans-serif" font-size="15">Persistent cache key removes the synchronous scan</text>
+  <text x="72" y="264" fill="#71717a" font-family="Inter, sans-serif" font-size="14">launch</text>
+  <text x="600" y="264" fill="#71717a" font-family="Inter, sans-serif" font-size="14">first window</text>
+</svg>

@@ -1,0 +1,4 @@
+# INSECURE development-only htpasswd. Do not use outside localhost.
+# Password for `foyer`: foyer-dev-dav-password-do-not-use-outside-development
+# Production must mount a different file via RADICALE_HTPASSWD_FILE.
+foyer:$2b$12$49YcnnQra1W5bFRFUgDMhOeHJBaR2yqpz4FUo.busfoyh0hsET50.

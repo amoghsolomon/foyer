@@ -1,0 +1,92 @@
+config:
+  edition: 3
+
+streams:
+  notes_folders:
+    auto_subscribe: true
+    query: >
+      SELECT id, user_id, parent_id, name, position, revision, created_at, updated_at
+      FROM notes_folders
+      WHERE user_id = auth.user_id()
+        AND deleted_at IS NULL
+
+  notes:
+    auto_subscribe: true
+    query: >
+      SELECT id, user_id, folder_id, title, body, revision, created_at, updated_at
+      FROM notes
+      WHERE user_id = auth.user_id()
+        AND deleted_at IS NULL
+
+  bookmarks_folders:
+    auto_subscribe: true
+    query: >
+      SELECT id, user_id, parent_id, name, position, revision, created_at, updated_at
+      FROM bookmarks_folders
+      WHERE user_id = auth.user_id()
+        AND deleted_at IS NULL
+
+  bookmarks:
+    auto_subscribe: true
+    query: >
+      SELECT id, user_id, folder_id, url, title, description, tags, favorite, archived,
+             position, revision, created_at, updated_at
+      FROM bookmarks
+      WHERE user_id = auth.user_id()
+        AND deleted_at IS NULL
+
+  task_lists:
+    auto_subscribe: true
+    query: >
+      SELECT id, user_id, name, position, href, etag, revision, created_at, updated_at
+      FROM task_lists
+      WHERE user_id = auth.user_id()
+        AND deleted_at IS NULL
+
+  tasks:
+    auto_subscribe: true
+    query: >
+      SELECT id, user_id, list_id, title, description, due_at, due_local, due_time_zone,
+             due_all_day, priority, completed, completed_at, position, href, etag,
+             revision, created_at, updated_at
+      FROM tasks
+      WHERE user_id = auth.user_id()
+        AND deleted_at IS NULL
+
+  contacts_address_books:
+    auto_subscribe: true
+    query: >
+      SELECT id, user_id, uid, href, etag, display_name, description, revision,
+             created_at, updated_at
+      FROM contacts_address_books
+      WHERE user_id = auth.user_id()
+        AND deleted_at IS NULL
+
+  contacts:
+    auto_subscribe: true
+    query: >
+      SELECT id, user_id, address_book_id, uid, href, etag, display_name, given_name,
+             family_name, additional_names, honorific_prefix, honorific_suffix,
+             organization, job_title, birthday, notes, emails, phones, addresses,
+             revision, created_at, updated_at
+      FROM contacts
+      WHERE user_id = auth.user_id()
+        AND deleted_at IS NULL
+
+  calendar_calendars:
+    auto_subscribe: true
+    query: >
+      SELECT id, user_id, uid, href, etag, display_name, description, color, revision,
+             created_at, updated_at
+      FROM calendar_calendars
+      WHERE user_id = auth.user_id()
+        AND deleted_at IS NULL
+
+  calendar_events:
+    auto_subscribe: true
+    query: >
+      SELECT id, user_id, calendar_id, uid, href, etag, summary, description, location,
+             all_day, dtstart, dtend, tzid, rrule, exdates, revision, created_at, updated_at
+      FROM calendar_events
+      WHERE user_id = auth.user_id()
+        AND deleted_at IS NULL

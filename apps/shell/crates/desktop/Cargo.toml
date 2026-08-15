@@ -1,0 +1,33 @@
+[package]
+name = "foyer-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-channel.workspace = true
+chrono.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+gpui_platform.workspace = true
+foyer-shell-niri.workspace = true
+foyer-shell-notes.workspace = true
+foyer-shell-paths.workspace = true
+foyer-shell-agenda.workspace = true
+foyer-shell-bookmarks.workspace = true
+foyer-shell-calendar.workspace = true
+foyer-shell-contacts.workspace = true
+foyer-shell-personal.workspace = true
+foyer-shell-tasks.workspace = true
+foyer-shell-presentation-player.workspace = true
+foyer-shell-services.workspace = true
+foyer-shell-presentation.workspace = true
+foyer-shell-storage.workspace = true
+foyer-shell-transcription.workspace = true
+foyer-shell-ui.workspace = true
+shlex.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true

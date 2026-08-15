@@ -1,0 +1,18 @@
+// Merge these entries into the matching sections of ~/.config/niri/config.kdl.
+// Keep an emergency terminal binding that does not depend on Foyer Shell.
+
+spawn-at-startup "systemctl" "--user" "start" "foyer-shell.service"
+
+binds {
+    Mod+Space repeat=false { spawn "foyer-shell" "search" "toggle"; }
+    Ctrl+Alt+Delete repeat=false { spawn "foyer-shell" "power" "toggle"; }
+    Super+Alt+L repeat=false { spawn "foyer-shell" "session" "lock"; }
+    Super+Alt+R repeat=false { spawn "foyer-shell" "transcription" "toggle"; }
+
+    XF86AudioRaiseVolume allow-when-locked=true { spawn "foyer-shell" "volume" "raise"; }
+    XF86AudioLowerVolume allow-when-locked=true { spawn "foyer-shell" "volume" "lower"; }
+    XF86AudioMute allow-when-locked=true repeat=false { spawn "foyer-shell" "volume" "toggle-mute"; }
+    XF86AudioMicMute allow-when-locked=true repeat=false { spawn "foyer-shell" "microphone" "toggle-mute"; }
+    XF86MonBrightnessUp allow-when-locked=true { spawn "foyer-shell" "brightness" "raise"; }
+    XF86MonBrightnessDown allow-when-locked=true { spawn "foyer-shell" "brightness" "lower"; }
+}

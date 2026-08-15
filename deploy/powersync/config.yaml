@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=https://unpkg.com/@powersync/service-schema@latest/json-schema/powersync-config.json
+# Local Open Edition configuration. PowerSync is a replaceable transport and
+# never receives credentials tables, operation logs, or embeddings.
+
+replication:
+  connections:
+    - type: postgresql
+      hostname: postgres
+      port: 5432
+      database: !env PS_SOURCE_DATABASE
+      username: powersync_role
+      password: !env PS_SOURCE_PASSWORD
+      sslmode: disable
+
+storage:
+  type: postgresql
+  hostname: postgres
+  port: 5432
+  database: powersync
+  username: powersync_storage
+  password: !env PS_STORAGE_PASSWORD
+  sslmode: disable
+
+port: 8080
+
+sync_config:
+  path: /config/sync.yaml
+
+client_auth:
+  # Asymmetric verification only. foyer-server publishes the ES256 public JWK.
+  jwks_uri: http://server:3583/v1/auth/jwks
+  audience:
+    - foyer-powersync
+
+telemetry:
+  disable_telemetry_sharing: true
+
+healthcheck:
+  probes:
+    use_http: true
+
+system:
+  logging:
+    level: info
+    format: json

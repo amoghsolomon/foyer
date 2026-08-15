@@ -1,0 +1,85 @@
+name: Publish production images
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: publish-production-images-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  validate-compose:
+    name: Validate production Compose
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Validate generated production configuration
+        run: ./deploy/scripts/validate-production-compose.sh
+
+  publish:
+    name: Publish ${{ matrix.service }}
+    needs: validate-compose
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: server
+            context: .
+            dockerfile: ./services/server/Dockerfile
+          - service: bootstrap
+            context: ./deploy/bootstrap
+            dockerfile: ./deploy/bootstrap/Dockerfile
+          - service: postgres
+            context: ./deploy/postgres
+            dockerfile: ./deploy/postgres/Dockerfile
+          - service: powersync
+            context: ./deploy/powersync
+            dockerfile: ./deploy/powersync/Dockerfile
+          - service: radicale
+            context: ./deploy/radicale
+            dockerfile: ./deploy/radicale/Dockerfile
+          - service: backup
+            context: ./deploy/backup
+            dockerfile: ./deploy/backup/Dockerfile
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/foyer:${{ matrix.service }}-main
+            ghcr.io/${{ github.repository_owner }}/foyer:${{ matrix.service }}-sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=Foyer ${{ matrix.service }}
+            org.opencontainers.image.licenses=GPL-3.0-or-later
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          provenance: mode=max
+          sbom: true

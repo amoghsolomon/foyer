@@ -1,0 +1,13 @@
+[package]
+name = "foyer-shell-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-channel.workspace = true
+rusqlite.workspace = true
+foyer-shell-presentation.workspace = true
+foyer-shell-paths.workspace = true
+tracing.workspace = true

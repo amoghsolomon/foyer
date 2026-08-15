@@ -1,0 +1,13 @@
+{
+  "keys": [
+    {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "<server-signing-x>",
+      "y": "<server-signing-y>",
+      "kid": "foyer-2026-01",
+      "alg": "ES256",
+      "use": "sig"
+    }
+  ]
+}

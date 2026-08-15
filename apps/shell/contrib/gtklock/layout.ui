@@ -1,0 +1,234 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <object class="GtkOverlay" id="window-box">
+    <property name="name">window-box</property>
+    <property name="hexpand">1</property>
+    <property name="vexpand">1</property>
+    <property name="halign">fill</property>
+    <property name="valign">fill</property>
+
+    <child>
+      <object class="GtkBox" id="overview-background">
+        <property name="visible">1</property>
+        <property name="hexpand">1</property>
+        <property name="vexpand">1</property>
+      </object>
+    </child>
+
+    <!-- Match Overview's 72 px horizontal and 60 px vertical frame. -->
+    <child type="overlay">
+      <object class="GtkBox" id="overview-content">
+        <property name="visible">1</property>
+        <property name="hexpand">1</property>
+        <property name="vexpand">1</property>
+        <property name="halign">fill</property>
+        <property name="valign">fill</property>
+        <property name="margin-start">72</property>
+        <property name="margin-end">72</property>
+        <property name="margin-top">60</property>
+        <property name="margin-bottom">60</property>
+        <property name="orientation">vertical</property>
+
+        <child>
+          <object class="GtkBox" id="info-box">
+            <property name="name">info-box</property>
+            <property name="visible">1</property>
+            <property name="hexpand">1</property>
+            <property name="halign">fill</property>
+            <child>
+              <object class="GtkImage" id="lock-icon">
+                <property name="name">lock-icon</property>
+                <property name="visible">1</property>
+                <property name="halign">start</property>
+                <property name="valign">center</property>
+                <property name="icon-name">system-lock-screen-symbolic</property>
+                <property name="pixel-size">22</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkBox" id="header-spacer">
+                <property name="visible">1</property>
+                <property name="hexpand">1</property>
+              </object>
+              <packing>
+                <property name="expand">1</property>
+                <property name="fill">1</property>
+              </packing>
+            </child>
+            <child>
+              <object class="GtkBox" id="time-box">
+                <property name="name">time-box</property>
+                <property name="visible">1</property>
+                <property name="halign">end</property>
+                <property name="valign">center</property>
+                <property name="orientation">vertical</property>
+                <property name="spacing">2</property>
+                <child>
+                  <object class="GtkLabel" id="clock-label">
+                    <property name="name">clock-label</property>
+                    <property name="visible">1</property>
+                    <property name="halign">end</property>
+                    <property name="xalign">1</property>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="date-label">
+                    <property name="name">date-label</property>
+                    <property name="visible">1</property>
+                    <property name="halign">end</property>
+                    <property name="xalign">1</property>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+
+        <!-- The locked state deliberately centers the context instead of copying the overview. -->
+        <child>
+          <object class="GtkBox" id="upcoming-region">
+            <property name="visible">1</property>
+            <property name="hexpand">1</property>
+            <property name="vexpand">1</property>
+            <property name="halign">fill</property>
+            <property name="valign">fill</property>
+            <child>
+              <object class="GtkLabel" id="upcoming-label">
+                <property name="name">upcoming-label</property>
+                <property name="visible">1</property>
+                <property name="width-request">720</property>
+                <property name="halign">center</property>
+                <property name="valign">center</property>
+                <property name="max-width-chars">54</property>
+                <property name="wrap">1</property>
+                <property name="wrap-mode">word-char</property>
+                <property name="xalign">0.5</property>
+                <property name="yalign">0.5</property>
+                <property name="label">Up next, we’re building the quiet center of Foyer Shell: persistent agent work, clear approvals, useful memory, and explainable presentations that appear only when they have something worth showing.</property>
+                <attributes>
+                  <attribute name="line-height" value="1.28"/>
+                </attributes>
+              </object>
+            </child>
+          </object>
+          <packing>
+            <property name="expand">1</property>
+            <property name="fill">1</property>
+          </packing>
+        </child>
+
+        <child>
+          <object class="GtkLabel" id="thought-label">
+            <property name="name">thought-label</property>
+            <property name="visible">1</property>
+            <property name="halign">start</property>
+            <property name="valign">end</property>
+            <property name="xalign">0</property>
+            <property name="label">The best interface knows when to remain still.</property>
+            <attributes>
+              <attribute name="line-height" value="1.4"/>
+            </attributes>
+          </object>
+        </child>
+      </object>
+    </child>
+
+    <!-- A 46 px field ending 48 px above the edge shares the thought line's center at y = 829. -->
+    <child type="overlay">
+      <object class="GtkRevealer" id="body-revealer">
+        <property name="name">body-revealer</property>
+        <property name="visible">1</property>
+        <property name="halign">center</property>
+        <property name="valign">end</property>
+        <property name="margin-bottom">48</property>
+        <property name="transition-type">crossfade</property>
+        <property name="transition-duration">160</property>
+        <child>
+          <object class="GtkBox" id="body-grid">
+            <property name="name">body-grid</property>
+            <property name="visible">1</property>
+            <child>
+              <object class="GtkEntry" id="input-field">
+                <property name="name">input-field</property>
+                <property name="visible">1</property>
+                <property name="width-request">420</property>
+                <property name="height-request">46</property>
+                <property name="placeholder-text">Password</property>
+                <property name="visibility">0</property>
+                <property name="caps-lock-warning">0</property>
+                <property name="input-purpose">password</property>
+                <signal name="activate" handler="window_pw_check"/>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+
+    <!-- Authentication feedback sits below the field without moving the bottom-row alignment. -->
+    <child type="overlay">
+      <object class="GtkBox" id="status-box">
+        <property name="visible">1</property>
+        <property name="spacing">8</property>
+        <property name="halign">center</property>
+        <property name="valign">end</property>
+        <property name="margin-bottom">22</property>
+        <child>
+          <object class="GtkLabel" id="warning-label">
+            <property name="name">warning-label</property>
+            <property name="visible">1</property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkLabel" id="error-label">
+            <property name="name">error-label</property>
+            <property name="visible">1</property>
+          </object>
+        </child>
+      </object>
+    </child>
+
+    <!-- GTKLock requires these objects even though this minimal lock does not expose them. -->
+    <child type="overlay">
+      <object class="GtkLabel" id="input-label">
+        <property name="name">input-label</property>
+        <property name="no-show-all">1</property>
+        <property name="visible">0</property>
+      </object>
+    </child>
+    <child type="overlay">
+      <object class="GtkButton" id="unlock-button">
+        <property name="name">unlock-button</property>
+        <property name="no-show-all">1</property>
+        <property name="visible">0</property>
+        <signal name="clicked" handler="window_pw_check"/>
+      </object>
+    </child>
+    <child type="overlay">
+      <object class="GtkRevealer" id="message-revealer">
+        <property name="name">message-revealer</property>
+        <property name="no-show-all">1</property>
+        <property name="visible">0</property>
+        <child>
+          <object class="GtkScrolledWindow" id="message-scrolled-window">
+            <property name="name">message-scrolled-window</property>
+            <property name="hscrollbar-policy">never</property>
+            <property name="max-content-height">120</property>
+            <property name="propagate-natural-height">1</property>
+            <child>
+              <object class="GtkViewport">
+                <child>
+                  <object class="GtkBox" id="message-box">
+                    <property name="name">message-box</property>
+                    <property name="visible">1</property>
+                    <property name="orientation">vertical</property>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+  </object>
+</interface>

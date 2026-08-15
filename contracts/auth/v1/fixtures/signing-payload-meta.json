@@ -1,0 +1,7 @@
+{
+  "deviceKeyId": "cn-I_WNMClehiVp51i_0VpOENW1upEerA8sEam5hn-s",
+  "apiAudience": "foyer-api",
+  "expiresAt": "2026-01-01T00:01:00Z",
+  "nonceHex": "1111111111111111111111111111111111111111111111111111111111111111",
+  "construction": "FOYER-AUTH-CHALLENGE-V1 || 0x00 || deviceKeyId || 0x00 || apiAudience || 0x00 || expiresAt || 0x00 || nonce"
+}

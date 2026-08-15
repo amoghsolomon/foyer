@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480" fill="none">
+  <rect width="640" height="480" fill="#FFF7EE"/>
+
+  <ellipse cx="320" cy="360" rx="180" ry="90" fill="#F2D0A9"/>
+
+  <!-- Ears -->
+  <path d="M180 140 L145 70 L215 125 Z" fill="#F7B267"/>
+  <path d="M460 140 L395 125 L495 70 Z" fill="#F7B267"/>
+
+  <!-- Head -->
+  <ellipse cx="320" cy="220" rx="160" ry="130" fill="#F9C784"/>
+  <ellipse cx="320" cy="220" rx="155" ry="125" fill="#F9C784"/>
+  <ellipse cx="250" cy="130" rx="35" ry="45" fill="#F9C784"/>
+  <ellipse cx="390" cy="130" rx="35" ry="45" fill="#F9C784"/>
+
+  <!-- Face -->
+  <ellipse cx="270" cy="210" rx="26" ry="24" fill="#2F2F2F"/>
+  <ellipse cx="370" cy="210" rx="26" ry="24" fill="#2F2F2F"/>
+  <ellipse cx="270" cy="205" rx="7" ry="7" fill="white"/>
+  <ellipse cx="370" cy="205" rx="7" ry="7" fill="white"/>
+
+  <path d="M300 245 C312 255 328 255 340 245" stroke="#2F2F2F" stroke-width="10" stroke-linecap="round" fill="none"/>
+
+  <!-- Nose and whiskers -->
+  <polygon points="317,258 323,258 320,266" fill="#D97B7B"/>
+  <line x1="250" y1="260" x2="190" y2="250" stroke="#2F2F2F" stroke-width="4" stroke-linecap="round"/>
+  <line x1="250" y1="270" x2="188" y2="275" stroke="#2F2F2F" stroke-width="4" stroke-linecap="round"/>
+  <line x1="250" y1="278" x2="188" y2="305" stroke="#2F2F2F" stroke-width="4" stroke-linecap="round"/>
+  <line x1="390" y1="260" x2="450" y2="250" stroke="#2F2F2F" stroke-width="4" stroke-linecap="round"/>
+  <line x1="390" y1="270" x2="452" y2="275" stroke="#2F2F2F" stroke-width="4" stroke-linecap="round"/>
+  <line x1="390" y1="278" x2="452" y2="305" stroke="#2F2F2F" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- Body -->
+  <ellipse cx="320" cy="430" rx="140" ry="40" fill="#F7B267"/>
+
+  <!-- Eyes look surprised -->
+  <path d="M248 202 C258 190 270 190 280 200" stroke="#2F2F2F" stroke-width="4" fill="none"/>
+  <path d="M360 202 C370 190 382 190 392 200" stroke="#2F2F2F" stroke-width="4" fill="none"/>
+
+  <!-- Text -->
+  <text x="260" y="445" font-family="Arial" font-size="24" fill="#8B5E3C">Meow 😺</text>
+</svg>

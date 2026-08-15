@@ -1,0 +1,24 @@
+# First matching rule wins. The Foyer Server service account must be listed
+# before the catch-all owner rules.
+
+# Service credential used only by Foyer Server. Android and Foyer Shell never
+# receive this password and never read /data.
+[foyer-service]
+user: foyer
+collection: .*
+permissions: RrWw
+
+[authenticated-root]
+user: .+
+collection:
+permissions: R
+
+[owner-principal]
+user: .+
+collection: {user}
+permissions: RW
+
+[owner-tree]
+user: .+
+collection: {user}/.*
+permissions: rw

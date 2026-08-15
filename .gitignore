@@ -1,0 +1,45 @@
+# Operating systems and editors
+.DS_Store
+*.iml
+.idea/
+.vscode/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+**/.dev.vars
+**/.wrangler/
+**/.wrangler-config/
+**/dist/
+**/.flue-vite/
+**/.flue-vite.wrangler.jsonc
+
+# Android and Gradle
+**/.gradle/
+**/build/
+**/local.properties
+**/gradle/gradle-daemon-jvm.properties
+**/.externalNativeBuild/
+**/.cxx/
+**/captures/
+
+# Node and pnpm
+**/node_modules/
+.pnpm-store/
+*.tsbuildinfo
+
+# Rust
+**/target/
+
+# Local deployment state
+deploy/.env
+deploy/data/
+deploy/secrets/
+
+# Logs and temporary files
+*.log
+*.pyc
+__pycache__/
+.tmp/
+tmp/

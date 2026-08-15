@@ -1,0 +1,17 @@
+[Unit]
+Description=Foyer Shell desktop for Niri
+PartOf=graphical-session.target
+After=graphical-session.target
+Wants=foyer-shell-transcription.service foyer-shell-tts.service foyer-shell-ydotoold.service
+After=foyer-shell-transcription.service foyer-shell-tts.service foyer-shell-ydotoold.service
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/foyer-shell/environment
+Environment=YDOTOOL_SOCKET=%t/foyer-shell/ydotoold.sock
+ExecStart=%h/.local/bin/foyer-shell
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=graphical-session.target

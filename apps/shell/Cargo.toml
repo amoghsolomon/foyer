@@ -1,0 +1,95 @@
+[workspace]
+members = [
+    "crates/agenda",
+    "crates/audio",
+    "crates/auth",
+    "crates/bookmarks",
+    "crates/calendar",
+    "crates/contacts",
+    "crates/desktop",
+    "crates/niri",
+    "crates/notes",
+    "crates/paths",
+    "crates/personal",
+    "crates/pi-bridge",
+    "crates/presentation",
+    "crates/presentation-player",
+    "crates/presentation-ui",
+    "crates/protocol",
+    "crates/services",
+    "crates/storage",
+    "crates/tasks",
+    "crates/tts",
+    "crates/transcription",
+    "crates/ui",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+rust-version = "1.97"
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+async-channel = "2.5.0"
+chrono = { version = "0.4.45", features = ["serde"] }
+chrono-tz = "0.10.4"
+# Keep Zed dependencies unqualified here so gpui-component resolves the same source. Cargo.lock
+# pins the compatible Zed revision selected for the shell; update the stack deliberately together.
+gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed", features = ["wayland"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "wayland"] }
+gpui-component = { version = "0.5.2", git = "https://github.com/longbridge/gpui-component", rev = "c1acb9f3854238da9543af817453726a0efbadb0", features = ["tree-sitter-languages"] }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "c1acb9f3854238da9543af817453726a0efbadb0" }
+hound = "3.5.1"
+cpal = "0.18.1"
+ndarray = "0.17.2"
+parakeet-rs = { version = "=0.3.7", default-features = false, features = ["cuda", "ort-defaults", "api-28"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+shlex = "1.3.0"
+thiserror = "2.0.20"
+ureq = { version = "3.4.0", default-features = true }
+niri-ipc = "=26.4.0"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+uuid = { version = "1.24.0", features = ["v5"] }
+zbus = "5.19.0"
+rust-embed = { version = "8.7.2", features = ["interpolate-folder-path"] }
+rusqlite = { version = "=0.39.0", features = ["bundled"] }
+async-trait = "0.1.89"
+futures-lite = "2.6.1"
+powersync = { version = "=0.0.7", features = ["reqwest", "tokio"] }
+reqwest = { version = "0.13.2", features = ["json"] }
+tokio = { version = "1.53.1", features = ["macros", "rt", "sync", "time"] }
+foyer-shell-agenda = { path = "crates/agenda" }
+foyer-shell-auth = { path = "crates/auth" }
+foyer-shell-audio = { path = "crates/audio" }
+foyer-shell-bookmarks = { path = "crates/bookmarks" }
+foyer-shell-calendar = { path = "crates/calendar" }
+foyer-shell-contacts = { path = "crates/contacts" }
+foyer-shell-niri = { path = "crates/niri" }
+foyer-shell-notes = { path = "crates/notes" }
+foyer-shell-paths = { path = "crates/paths" }
+foyer-shell-personal = { path = "crates/personal" }
+foyer-shell-pi-bridge = { path = "crates/pi-bridge" }
+foyer-shell-presentation = { path = "crates/presentation" }
+foyer-shell-presentation-player = { path = "crates/presentation-player" }
+foyer-shell-presentation-ui = { path = "crates/presentation-ui" }
+foyer-shell-protocol = { path = "crates/protocol" }
+foyer-shell-services = { path = "crates/services" }
+foyer-shell-storage = { path = "crates/storage" }
+foyer-shell-tasks = { path = "crates/tasks" }
+foyer-shell-transcription = { path = "crates/transcription", default-features = false }
+foyer-shell-tts = { path = "crates/tts" }
+foyer-shell-ui = { path = "crates/ui" }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
+strip = "symbols"

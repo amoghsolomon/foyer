@@ -1,0 +1,27 @@
+[package]
+name = "foyer-shell-transcription"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["service"]
+service = ["dep:cpal", "dep:hound", "dep:ndarray", "dep:parakeet-rs"]
+
+[dependencies]
+anyhow.workspace = true
+async-channel.workspace = true
+foyer-shell-paths.workspace = true
+cpal = { workspace = true, optional = true }
+hound = { workspace = true, optional = true }
+ndarray = { workspace = true, optional = true }
+parakeet-rs = { workspace = true, optional = true }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zbus.workspace = true
+
+[[bin]]
+name = "foyer-shell-transcription"
+path = "src/bin/service.rs"
+required-features = ["service"]

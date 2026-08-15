@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!--
+      Foyer's F is split by a right-opening corridor. The 18dp inset keeps the
+      mark inside the adaptive-icon safe zone under circle and squircle masks.
+    -->
+    <path
+        android:fillColor="#F2F1ED"
+        android:pathData="M34,29Q34,28 35,28H73Q74,28 74,29V36Q74,37 73,37H44V48H73Q74,48 74,49V55Q74,56 73,56H44V79Q44,80 43,80H35Q34,80 34,79Z" />
+    <path
+        android:fillColor="#F2F1ED"
+        android:pathData="M48,61Q48,58 51,58H73Q74,58 74,59V65Q74,66 73,66H57V79Q57,80 56,80H49Q48,80 48,79Z" />
+</vector>

@@ -1,0 +1,3299 @@
+openapi: 3.1.0
+info:
+  title: Foyer Server API
+  version: 0.4.0
+  description: |
+    Contract for the self-hosted Foyer Rust service.
+
+    This version covers notes, bookmarks, tasks, contacts, calendar, and device-key
+    authentication. Clients communicate only through this contract and
+    `contracts/auth/v1/`. They do not receive PostgreSQL credentials, DAV
+    credentials, raw iCalendar/vCard payloads, or operation/checkpoint tables.
+
+    Calendar, tasks, and contacts are normalized projections of Radicale. Notes and
+    bookmarks are PostgreSQL-canonical. All mutations use client-generated operation
+    identifiers. DAV-backed writes also carry the last observed ETag or revision.
+
+    The deleted Cloudflare/Flue HTTP API is not a compatibility target.
+
+    ## Authentication
+
+    Production identity is a manually enrolled ECDSA P-256 device key (ADR 0023).
+
+    - `POST /v1/auth/challenges` with `{ "deviceKeyId": "<thumbprint>" }`.
+    - Sign the opaque `signingPayload` bytes with ECDSA P-256/SHA-256.
+    - `POST /v1/auth/sessions` with `{ "challengeId", "signature" }` where the
+      signature is IEEE P1363 `r||s`, base64url without padding.
+    - Send `Authorization: Bearer <accessToken>` on every authenticated route.
+    - `GET /v1/auth/jwks` publishes the server ES256 verification key.
+    - `GET /v1/sync/credentials` issues a five-minute PowerSync JWT with a
+      distinct audience. PowerSync verifies only the public JWKS.
+
+    Field names, thumbprint construction, payload domain separation, and
+    cross-language fixtures live in `contracts/auth/v1/`.
+
+    The static development bearer token remains available only when
+    `FOYER_SERVER_ENV=development`. Production refuses to start without a valid
+    PEM signing key and rejects the static token.
+paths:
+  /health/live:
+    get:
+      operationId: getLiveness
+      summary: Report whether the server process is alive
+      security: []
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /health/ready:
+    get:
+      operationId: getReadiness
+      summary: Report whether the server can serve notes traffic
+      security: []
+      responses:
+        "200":
+          description: The process is alive and PostgreSQL accepted a ping.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "503":
+          description: PostgreSQL is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+  /v1/auth/challenges:
+    post:
+      operationId: createAuthChallenge
+      summary: Issue a one-shot device signing challenge
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAuthChallengeRequest"
+      responses:
+        "200":
+          description: Challenge identifier, opaque signing payload, and expiry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthChallenge"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /v1/auth/sessions:
+    post:
+      operationId: createAuthSession
+      summary: Consume a challenge and issue a Foyer access JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAuthSessionRequest"
+      responses:
+        "200":
+          description: A five-minute ES256 access token for the enrolled device.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /v1/auth/jwks:
+    get:
+      operationId: getAuthJwks
+      summary: Publish the server ES256 verification JWKS
+      security: []
+      responses:
+        "200":
+          description: Public JWKS used by Foyer Server and PowerSync.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Jwks"
+  /v1/session:
+    get:
+      operationId: getSession
+      summary: Return the authenticated principal
+      responses:
+        "200":
+          description: The access token or development bearer is valid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /v1/sync/credentials:
+    get:
+      operationId: getSyncCredentials
+      summary: Issue a short-lived PowerSync JWT
+      description: |
+        Returns a five-minute ES256 JWT and the client-facing PowerSync URL. The
+        token uses a distinct audience, is scoped to the current user and device,
+        and is not a database credential. PowerSync verifies it with
+        `GET /v1/auth/jwks`.
+      responses:
+        "200":
+          description: Credentials the official PowerSync client SDKs can present.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SyncCredentials"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /v1/dev/jwks:
+    get:
+      operationId: getDevelopmentJwks
+      summary: Development alias of the public ES256 JWKS
+      security: []
+      responses:
+        "200":
+          description: The same public JWKS as `/v1/auth/jwks`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Jwks"
+        "404":
+          description: Disabled outside FOYER_SERVER_ENV=development.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+  /v1/folders:
+    get:
+      operationId: listFolders
+      summary: List the current user's live folders
+      responses:
+        "200":
+          description: Folders in deterministic parent, position, name, id order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FolderList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createFolder
+      summary: Create a folder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateFolderRequest"
+      responses:
+        "200":
+          description: The folder was created or the operation was replayed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Folder"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "422":
+          $ref: "#/components/responses/SemanticRejection"
+  /v1/folders/{folderId}:
+    get:
+      operationId: getFolder
+      summary: Fetch one live folder
+      parameters:
+        - $ref: "#/components/parameters/folderId"
+      responses:
+        "200":
+          description: The folder exists and belongs to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Folder"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/folders/{folderId}/rename:
+    post:
+      operationId: renameFolder
+      summary: Rename a folder
+      parameters:
+        - $ref: "#/components/parameters/folderId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenameFolderRequest"
+      responses:
+        "200":
+          description: The folder was renamed or the operation was replayed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Folder"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/folders/{folderId}/move:
+    post:
+      operationId: moveFolder
+      summary: Move a folder or change its position
+      parameters:
+        - $ref: "#/components/parameters/folderId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveFolderRequest"
+      responses:
+        "200":
+          description: The folder was moved or the operation was replayed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Folder"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "422":
+          $ref: "#/components/responses/SemanticRejection"
+  /v1/folders/{folderId}/delete:
+    post:
+      operationId: deleteFolder
+      summary: Tombstone an empty folder
+      parameters:
+        - $ref: "#/components/parameters/folderId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteRequest"
+      responses:
+        "200":
+          description: The folder was tombstoned or the operation was replayed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Folder"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "422":
+          $ref: "#/components/responses/SemanticRejection"
+  /v1/notes:
+    get:
+      operationId: listNotes
+      summary: List the current user's live notes
+      parameters:
+        - name: folderId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Notes in deterministic updated-at, id order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NoteList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createNote
+      summary: Create a Markdown note
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateNoteRequest"
+      responses:
+        "200":
+          description: The note was created or the operation was replayed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "422":
+          $ref: "#/components/responses/SemanticRejection"
+  /v1/notes/{noteId}:
+    get:
+      operationId: getNote
+      summary: Fetch one live note
+      parameters:
+        - $ref: "#/components/parameters/noteId"
+      responses:
+        "200":
+          description: The note exists and belongs to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/notes/{noteId}/update:
+    post:
+      operationId: updateNote
+      summary: Replace a note's title and Markdown body
+      parameters:
+        - $ref: "#/components/parameters/noteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateNoteRequest"
+      responses:
+        "200":
+          description: The note was updated or the operation was replayed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/notes/{noteId}/move:
+    post:
+      operationId: moveNote
+      summary: Move a note into another folder
+      parameters:
+        - $ref: "#/components/parameters/noteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveNoteRequest"
+      responses:
+        "200":
+          description: The note was moved or the operation was replayed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/notes/{noteId}/delete:
+    post:
+      operationId: deleteNote
+      summary: Tombstone a note
+      parameters:
+        - $ref: "#/components/parameters/noteId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteRequest"
+      responses:
+        "200":
+          description: The note was tombstoned or the operation was replayed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Note"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/bookmark-folders:
+    get:
+      operationId: listBookmarkFolders
+      summary: List the current user's live bookmark folders
+      responses:
+        "200":
+          description: Folders in deterministic parent, position, name, id order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookmarkFolderList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createBookmarkFolder
+      summary: Create a bookmark folder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBookmarkFolderRequest"
+      responses:
+        "200":
+          description: The folder was created or the operation was replayed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookmarkFolder"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "422":
+          $ref: "#/components/responses/SemanticRejection"
+  /v1/bookmark-folders/{folderId}:
+    get:
+      operationId: getBookmarkFolder
+      parameters:
+        - $ref: "#/components/parameters/folderId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookmarkFolder"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/bookmark-folders/{folderId}/rename:
+    post:
+      operationId: renameBookmarkFolder
+      parameters:
+        - $ref: "#/components/parameters/folderId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenameFolderRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookmarkFolder"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/bookmark-folders/{folderId}/move:
+    post:
+      operationId: moveBookmarkFolder
+      parameters:
+        - $ref: "#/components/parameters/folderId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveFolderRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookmarkFolder"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "422":
+          $ref: "#/components/responses/SemanticRejection"
+  /v1/bookmark-folders/{folderId}/delete:
+    post:
+      operationId: deleteBookmarkFolder
+      parameters:
+        - $ref: "#/components/parameters/folderId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookmarkFolder"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "422":
+          $ref: "#/components/responses/SemanticRejection"
+  /v1/bookmarks:
+    get:
+      operationId: listBookmarks
+      parameters:
+        - name: folderId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: favorite
+          in: query
+          schema:
+            type: boolean
+        - name: archived
+          in: query
+          schema:
+            type: boolean
+        - name: tag
+          in: query
+          schema:
+            type: string
+        - name: q
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookmarkList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createBookmark
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBookmarkRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bookmark"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "422":
+          $ref: "#/components/responses/SemanticRejection"
+  /v1/bookmarks/{bookmarkId}:
+    get:
+      operationId: getBookmark
+      parameters:
+        - $ref: "#/components/parameters/bookmarkId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bookmark"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/bookmarks/{bookmarkId}/update:
+    post:
+      operationId: updateBookmark
+      parameters:
+        - $ref: "#/components/parameters/bookmarkId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateBookmarkRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bookmark"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/bookmarks/{bookmarkId}/move:
+    post:
+      operationId: moveBookmark
+      parameters:
+        - $ref: "#/components/parameters/bookmarkId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveBookmarkRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bookmark"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "422":
+          $ref: "#/components/responses/SemanticRejection"
+  /v1/bookmarks/{bookmarkId}/favorite:
+    post:
+      operationId: favoriteBookmark
+      parameters:
+        - $ref: "#/components/parameters/bookmarkId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ToggleBookmarkRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bookmark"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/bookmarks/{bookmarkId}/archive:
+    post:
+      operationId: archiveBookmark
+      parameters:
+        - $ref: "#/components/parameters/bookmarkId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ToggleBookmarkRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bookmark"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/bookmarks/{bookmarkId}/delete:
+    post:
+      operationId: deleteBookmark
+      parameters:
+        - $ref: "#/components/parameters/bookmarkId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bookmark"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/task-lists:
+    get:
+      operationId: listTaskLists
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskListCollection"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createTaskList
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskListRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskList"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "422":
+          $ref: "#/components/responses/SemanticRejection"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/task-lists/{listId}:
+    get:
+      operationId: getTaskList
+      parameters:
+        - $ref: "#/components/parameters/listId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/task-lists/{listId}/rename:
+    post:
+      operationId: renameTaskList
+      parameters:
+        - $ref: "#/components/parameters/listId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenameTaskListRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/task-lists/{listId}/delete:
+    post:
+      operationId: deleteTaskList
+      parameters:
+        - $ref: "#/components/parameters/listId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "422":
+          $ref: "#/components/responses/SemanticRejection"
+  /v1/tasks:
+    get:
+      operationId: listTasks
+      parameters:
+        - name: listId
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskCollection"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/tasks/{taskId}:
+    get:
+      operationId: getTask
+      parameters:
+        - $ref: "#/components/parameters/taskId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/tasks/{taskId}/update:
+    post:
+      operationId: updateTask
+      parameters:
+        - $ref: "#/components/parameters/taskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTaskRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/tasks/{taskId}/move:
+    post:
+      operationId: moveTask
+      parameters:
+        - $ref: "#/components/parameters/taskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveTaskRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/tasks/{taskId}/complete:
+    post:
+      operationId: completeTask
+      parameters:
+        - $ref: "#/components/parameters/taskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/tasks/{taskId}/reopen:
+    post:
+      operationId: reopenTask
+      parameters:
+        - $ref: "#/components/parameters/taskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/tasks/{taskId}/delete:
+    post:
+      operationId: deleteTask
+      parameters:
+        - $ref: "#/components/parameters/taskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/address-books:
+    get:
+      operationId: listAddressBooks
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBookList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createAddressBook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAddressBookRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBook"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/address-books/{addressBookId}:
+    get:
+      operationId: getAddressBook
+      parameters:
+        - $ref: "#/components/parameters/addressBookId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBook"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/address-books/{addressBookId}/update:
+    post:
+      operationId: updateAddressBook
+      parameters:
+        - $ref: "#/components/parameters/addressBookId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAddressBookRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBook"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/address-books/{addressBookId}/delete:
+    post:
+      operationId: deleteAddressBook
+      parameters:
+        - $ref: "#/components/parameters/addressBookId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteContactRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBook"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "422":
+          $ref: "#/components/responses/SemanticRejection"
+  /v1/contacts:
+    get:
+      operationId: listContacts
+      parameters:
+        - name: addressBookId
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContactList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createContact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateContactRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Contact"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/contacts/{contactId}:
+    get:
+      operationId: getContact
+      parameters:
+        - $ref: "#/components/parameters/contactId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Contact"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/contacts/{contactId}/update:
+    post:
+      operationId: updateContact
+      parameters:
+        - $ref: "#/components/parameters/contactId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateContactRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Contact"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/contacts/{contactId}/move:
+    post:
+      operationId: moveContact
+      parameters:
+        - $ref: "#/components/parameters/contactId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveContactRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Contact"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/contacts/{contactId}/delete:
+    post:
+      operationId: deleteContact
+      parameters:
+        - $ref: "#/components/parameters/contactId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteContactRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Contact"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/calendars:
+    get:
+      operationId: listCalendars
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createCalendar
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCalendarRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Calendar"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/calendars/{calendarId}:
+    get:
+      operationId: getCalendar
+      parameters:
+        - $ref: "#/components/parameters/calendarId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Calendar"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/calendars/{calendarId}/rename:
+    post:
+      operationId: renameCalendar
+      parameters:
+        - $ref: "#/components/parameters/calendarId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenameCalendarRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Calendar"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/calendars/{calendarId}/delete:
+    post:
+      operationId: deleteCalendar
+      parameters:
+        - $ref: "#/components/parameters/calendarId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteCalendarRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Calendar"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "422":
+          $ref: "#/components/responses/SemanticRejection"
+  /v1/events:
+    get:
+      operationId: listEvents
+      parameters:
+        - name: calendarId
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEventRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Event"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/events/expand:
+    get:
+      operationId: expandEvents
+      summary: Expand recurring events inside a bounded window
+      parameters:
+        - name: calendarId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: start
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: end
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 512
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OccurrenceList"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/events/{eventId}:
+    get:
+      operationId: getEvent
+      parameters:
+        - $ref: "#/components/parameters/eventId"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Event"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/events/{eventId}/update:
+    post:
+      operationId: updateEvent
+      parameters:
+        - $ref: "#/components/parameters/eventId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateEventRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Event"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/events/{eventId}/move:
+    post:
+      operationId: moveEvent
+      parameters:
+        - $ref: "#/components/parameters/eventId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveEventRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Event"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+  /v1/events/{eventId}/delete:
+    post:
+      operationId: deleteEvent
+      parameters:
+        - $ref: "#/components/parameters/eventId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteCalendarRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Event"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+components:
+  securitySchemes:
+    foyerAccess:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Five-minute ES256 access JWT issued by POST /v1/auth/sessions. Claims
+        are documented in contracts/auth/v1/.
+    developmentBearer:
+      type: http
+      scheme: bearer
+      description: >
+        Development-only static token from FOYER_DEV_TOKEN. Rejected unless the
+        process is running with FOYER_SERVER_ENV=development.
+  parameters:
+    folderId:
+      name: folderId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    noteId:
+      name: noteId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    bookmarkId:
+      name: bookmarkId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    listId:
+      name: listId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    taskId:
+      name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    addressBookId:
+      name: addressBookId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    contactId:
+      name: contactId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    calendarId:
+      name: calendarId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    eventId:
+      name: eventId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    Forbidden:
+      description: The token is not usable in this process environment.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    NotFound:
+      description: The entity does not exist for this user.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    Conflict:
+      description: Stale expected revision or identifier collision.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    Gone:
+      description: The entity is tombstoned and cannot be resurrected.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    InvalidRequest:
+      description: The request failed input bounds or schema validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    SemanticRejection:
+      description: >
+        The mutation is well-formed but violates folder emptiness, parent, cycle,
+        or limit rules.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    Unavailable:
+      description: PostgreSQL or the DAV authority is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    RateLimited:
+      description: Authentication request rate or outstanding-challenge bound exceeded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+  schemas:
+    Health:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - service
+        - version
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+            - unavailable
+        service:
+          type: string
+          const: foyer-server
+        version:
+          type: string
+    CreateAuthChallengeRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - deviceKeyId
+      properties:
+        deviceKeyId:
+          type: string
+          description: RFC 7638 SHA-256 thumbprint of the P-256 public JWK.
+    AuthChallenge:
+      type: object
+      additionalProperties: false
+      required:
+        - challengeId
+        - signingPayload
+        - expiresAt
+      properties:
+        challengeId:
+          type: string
+          format: uuid
+        signingPayload:
+          type: string
+          description: Opaque base64url-no-pad bytes the device must sign.
+        expiresAt:
+          type: string
+          format: date-time
+    CreateAuthSessionRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - challengeId
+        - signature
+      properties:
+        challengeId:
+          type: string
+          format: uuid
+        signature:
+          type: string
+          description: IEEE P1363 r||s, base64url without padding.
+    AuthSession:
+      type: object
+      additionalProperties: false
+      required:
+        - accessToken
+        - tokenType
+        - expiresAt
+        - userId
+        - deviceKeyId
+      properties:
+        accessToken:
+          type: string
+        tokenType:
+          type: string
+          const: Bearer
+        expiresAt:
+          type: string
+          format: date-time
+        userId:
+          type: string
+        deviceKeyId:
+          type: string
+    Session:
+      type: object
+      additionalProperties: false
+      required:
+        - userId
+        - environment
+        - development
+      properties:
+        userId:
+          type: string
+        deviceKeyId:
+          type: string
+        environment:
+          type: string
+        development:
+          type: boolean
+    SyncCredentials:
+      type: object
+      additionalProperties: false
+      required:
+        - endpoint
+        - token
+        - expiresAt
+        - userId
+      properties:
+        endpoint:
+          type: string
+          format: uri
+        token:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        userId:
+          type: string
+    Jwks:
+      type: object
+      additionalProperties: false
+      required:
+        - keys
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    ErrorBody:
+      type: object
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          $ref: "#/components/schemas/Error"
+    Error:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          enum:
+            - unauthenticated
+            - forbidden
+            - not_found
+            - gone
+            - stale_revision
+            - conflict
+            - invalid_request
+            - invalid_parent
+            - cycle
+            - folder_not_empty
+            - address_book_not_empty
+            - stale_etag
+            - limit_exceeded
+            - unavailable
+            - rate_limited
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+    Folder:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - userId
+        - parentId
+        - name
+        - position
+        - revision
+        - createdAt
+        - updatedAt
+        - deletedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+        parentId:
+          type:
+            - string
+            - "null"
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        position:
+          type: integer
+          minimum: 0
+          maximum: 100000
+        revision:
+          type: integer
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+    FolderList:
+      type: object
+      additionalProperties: false
+      required:
+        - folders
+      properties:
+        folders:
+          type: array
+          items:
+            $ref: "#/components/schemas/Folder"
+    Note:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - userId
+        - folderId
+        - title
+        - body
+        - revision
+        - createdAt
+        - updatedAt
+        - deletedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+        folderId:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        body:
+          type: string
+          maxLength: 262144
+          description: Lossless Markdown source. The server never executes HTML.
+        revision:
+          type: integer
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+    NoteList:
+      type: object
+      additionalProperties: false
+      required:
+        - notes
+      properties:
+        notes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Note"
+    CreateFolderRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - id
+        - name
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        parentId:
+          type:
+            - string
+            - "null"
+          format: uuid
+        position:
+          type: integer
+          minimum: 0
+          maximum: 100000
+    RenameFolderRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+        - name
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+    MoveFolderRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+          minimum: 1
+        parentId:
+          type:
+            - string
+            - "null"
+          format: uuid
+        position:
+          type: integer
+          minimum: 0
+          maximum: 100000
+    CreateNoteRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - id
+        - folderId
+        - title
+        - body
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        id:
+          type: string
+          format: uuid
+        folderId:
+          type: string
+          format: uuid
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        body:
+          type: string
+          maxLength: 262144
+    UpdateNoteRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+        - title
+        - body
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        body:
+          type: string
+          maxLength: 262144
+    MoveNoteRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+        - folderId
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+          minimum: 1
+        folderId:
+          type: string
+          format: uuid
+    DeleteRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+          minimum: 1
+    BookmarkFolder:
+      allOf:
+        - $ref: "#/components/schemas/Folder"
+    BookmarkFolderList:
+      type: object
+      additionalProperties: false
+      required:
+        - folders
+      properties:
+        folders:
+          type: array
+          items:
+            $ref: "#/components/schemas/BookmarkFolder"
+    Bookmark:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - userId
+        - folderId
+        - url
+        - title
+        - description
+        - tags
+        - favorite
+        - archived
+        - position
+        - revision
+        - createdAt
+        - updatedAt
+        - deletedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+        folderId:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+        title:
+          type: string
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        favorite:
+          type: boolean
+        archived:
+          type: boolean
+        position:
+          type: integer
+        revision:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+    BookmarkList:
+      type: object
+      additionalProperties: false
+      required:
+        - bookmarks
+      properties:
+        bookmarks:
+          type: array
+          items:
+            $ref: "#/components/schemas/Bookmark"
+    CreateBookmarkFolderRequest:
+      $ref: "#/components/schemas/CreateFolderRequest"
+    CreateBookmarkRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - id
+        - folderId
+        - url
+        - title
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        id:
+          type: string
+          format: uuid
+        folderId:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+        title:
+          type: string
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        favorite:
+          type: boolean
+        archived:
+          type: boolean
+        position:
+          type: integer
+    UpdateBookmarkRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+        - url
+        - title
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+        url:
+          type: string
+          format: uri
+        title:
+          type: string
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+    MoveBookmarkRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+        - folderId
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+        folderId:
+          type: string
+          format: uuid
+        position:
+          type: integer
+    ToggleBookmarkRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+        favorite:
+          type: boolean
+        archived:
+          type: boolean
+    TaskList:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - userId
+        - name
+        - position
+        - href
+        - revision
+        - createdAt
+        - updatedAt
+        - deletedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+        name:
+          type: string
+        position:
+          type: integer
+        href:
+          type: string
+        etag:
+          type:
+            - string
+            - "null"
+        revision:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+    TaskListCollection:
+      type: object
+      additionalProperties: false
+      required:
+        - lists
+      properties:
+        lists:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskList"
+    Due:
+      type: object
+      additionalProperties: false
+      required:
+        - local
+        - allDay
+      properties:
+        local:
+          type: string
+        timeZone:
+          type: string
+        allDay:
+          type: boolean
+        at:
+          type: string
+          format: date-time
+    Task:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - userId
+        - listId
+        - title
+        - description
+        - priority
+        - completed
+        - position
+        - href
+        - etag
+        - revision
+        - createdAt
+        - updatedAt
+        - deletedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+        listId:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+        due:
+          $ref: "#/components/schemas/Due"
+        priority:
+          type: integer
+        completed:
+          type: boolean
+        completedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+        position:
+          type: integer
+        href:
+          type: string
+        etag:
+          type: string
+        revision:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+    TaskCollection:
+      type: object
+      additionalProperties: false
+      required:
+        - tasks
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/Task"
+    CreateTaskListRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - id
+        - name
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        position:
+          type: integer
+    RenameTaskListRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+        - name
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+        name:
+          type: string
+    CreateTaskRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - id
+        - listId
+        - title
+        - description
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        id:
+          type: string
+          format: uuid
+        listId:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+        due:
+          $ref: "#/components/schemas/Due"
+        priority:
+          type: integer
+        position:
+          type: integer
+    UpdateTaskRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+        - title
+        - description
+        - priority
+        - position
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+        due:
+          $ref: "#/components/schemas/Due"
+        priority:
+          type: integer
+        position:
+          type: integer
+    MoveTaskRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+        - listId
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+        listId:
+          type: string
+          format: uuid
+        position:
+          type: integer
+    AddressBook:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - userId
+        - uid
+        - href
+        - displayName
+        - description
+        - revision
+        - createdAt
+        - updatedAt
+        - deletedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+        uid:
+          type: string
+        href:
+          type: string
+        etag:
+          type:
+            - string
+            - "null"
+        displayName:
+          type: string
+        description:
+          type: string
+        revision:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+    AddressBookList:
+      type: object
+      additionalProperties: false
+      required:
+        - addressBooks
+      properties:
+        addressBooks:
+          type: array
+          items:
+            $ref: "#/components/schemas/AddressBook"
+    StructuredName:
+      type: object
+      additionalProperties: false
+      properties:
+        familyName:
+          type: string
+        givenName:
+          type: string
+        additionalNames:
+          type: string
+        honorificPrefix:
+          type: string
+        honorificSuffix:
+          type: string
+    TypedEmail:
+      type: object
+      additionalProperties: false
+      required:
+        - value
+      properties:
+        value:
+          type: string
+        type:
+          type: string
+        pref:
+          type: boolean
+    TypedPhone:
+      type: object
+      additionalProperties: false
+      required:
+        - value
+      properties:
+        value:
+          type: string
+        type:
+          type: string
+        pref:
+          type: boolean
+    PostalAddress:
+      type: object
+      additionalProperties: false
+      properties:
+        poBox:
+          type: string
+        extended:
+          type: string
+        street:
+          type: string
+        locality:
+          type: string
+        region:
+          type: string
+        postalCode:
+          type: string
+        country:
+          type: string
+        type:
+          type: string
+    Contact:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - userId
+        - addressBookId
+        - uid
+        - href
+        - etag
+        - displayName
+        - emails
+        - phones
+        - addresses
+        - revision
+        - createdAt
+        - updatedAt
+        - deletedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+        addressBookId:
+          type: string
+          format: uuid
+        uid:
+          type: string
+        href:
+          type: string
+        etag:
+          type: string
+        displayName:
+          type: string
+        name:
+          $ref: "#/components/schemas/StructuredName"
+        organization:
+          type: string
+        jobTitle:
+          type: string
+        birthday:
+          type:
+            - string
+            - "null"
+        notes:
+          type: string
+        emails:
+          type: array
+          items:
+            $ref: "#/components/schemas/TypedEmail"
+        phones:
+          type: array
+          items:
+            $ref: "#/components/schemas/TypedPhone"
+        addresses:
+          type: array
+          items:
+            $ref: "#/components/schemas/PostalAddress"
+        revision:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+    ContactList:
+      type: object
+      additionalProperties: false
+      required:
+        - contacts
+      properties:
+        contacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Contact"
+    CreateAddressBookRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - id
+        - displayName
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        id:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        description:
+          type: string
+    UpdateAddressBookRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+        - displayName
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+        expectedEtag:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+    CreateContactRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - id
+        - addressBookId
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        id:
+          type: string
+          format: uuid
+        addressBookId:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        name:
+          $ref: "#/components/schemas/StructuredName"
+        organization:
+          type: string
+        jobTitle:
+          type: string
+        birthday:
+          type: string
+        notes:
+          type: string
+        emails:
+          type: array
+          items:
+            $ref: "#/components/schemas/TypedEmail"
+        phones:
+          type: array
+          items:
+            $ref: "#/components/schemas/TypedPhone"
+        addresses:
+          type: array
+          items:
+            $ref: "#/components/schemas/PostalAddress"
+    UpdateContactRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+        expectedEtag:
+          type: string
+        displayName:
+          type: string
+        name:
+          $ref: "#/components/schemas/StructuredName"
+        organization:
+          type: string
+        jobTitle:
+          type: string
+        birthday:
+          type: string
+        notes:
+          type: string
+        emails:
+          type: array
+          items:
+            $ref: "#/components/schemas/TypedEmail"
+        phones:
+          type: array
+          items:
+            $ref: "#/components/schemas/TypedPhone"
+        addresses:
+          type: array
+          items:
+            $ref: "#/components/schemas/PostalAddress"
+    MoveContactRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+        - addressBookId
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+        expectedEtag:
+          type: string
+        addressBookId:
+          type: string
+          format: uuid
+    DeleteContactRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+        expectedEtag:
+          type: string
+    Calendar:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - userId
+        - uid
+        - href
+        - etag
+        - displayName
+        - description
+        - revision
+        - createdAt
+        - updatedAt
+        - deletedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+        uid:
+          type: string
+        href:
+          type: string
+        etag:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        color:
+          type:
+            - string
+            - "null"
+        revision:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+    CalendarList:
+      type: object
+      additionalProperties: false
+      required:
+        - calendars
+      properties:
+        calendars:
+          type: array
+          items:
+            $ref: "#/components/schemas/Calendar"
+    Event:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - userId
+        - calendarId
+        - uid
+        - href
+        - etag
+        - summary
+        - description
+        - location
+        - allDay
+        - dtstart
+        - revision
+        - createdAt
+        - updatedAt
+        - deletedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+        calendarId:
+          type: string
+          format: uuid
+        uid:
+          type: string
+        href:
+          type: string
+        etag:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+        location:
+          type: string
+        allDay:
+          type: boolean
+        dtstart:
+          type: string
+        dtend:
+          type:
+            - string
+            - "null"
+        tzid:
+          type:
+            - string
+            - "null"
+        rrule:
+          type:
+            - string
+            - "null"
+        exdates:
+          type: string
+        revision:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+    EventList:
+      type: object
+      additionalProperties: false
+      required:
+        - events
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/Event"
+    Occurrence:
+      type: object
+      additionalProperties: false
+      required:
+        - eventId
+        - calendarId
+        - uid
+        - summary
+        - allDay
+        - startLocal
+        - recurrenceId
+        - isRecurring
+      properties:
+        eventId:
+          type: string
+        calendarId:
+          type: string
+        uid:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+        location:
+          type: string
+        allDay:
+          type: boolean
+        tzid:
+          type:
+            - string
+            - "null"
+        startUnix:
+          type:
+            - integer
+            - "null"
+        endUnix:
+          type:
+            - integer
+            - "null"
+        startLocal:
+          type: string
+        endLocal:
+          type:
+            - string
+            - "null"
+        recurrenceId:
+          type: string
+        isRecurring:
+          type: boolean
+    OccurrenceList:
+      type: object
+      additionalProperties: false
+      required:
+        - occurrences
+      properties:
+        occurrences:
+          type: array
+          items:
+            $ref: "#/components/schemas/Occurrence"
+    CreateCalendarRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - id
+        - displayName
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        id:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        description:
+          type: string
+        color:
+          type: string
+    RenameCalendarRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+        - displayName
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+        expectedEtag:
+          type: string
+        displayName:
+          type: string
+    CreateEventRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - id
+        - calendarId
+        - summary
+        - allDay
+        - dtstart
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        id:
+          type: string
+          format: uuid
+        calendarId:
+          type: string
+          format: uuid
+        uid:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+        location:
+          type: string
+        allDay:
+          type: boolean
+        dtstart:
+          type: string
+        dtend:
+          type: string
+        tzid:
+          type: string
+        rrule:
+          type: string
+        exdates:
+          type: array
+          items:
+            type: string
+    UpdateEventRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+        - summary
+        - allDay
+        - dtstart
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+        expectedEtag:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+        location:
+          type: string
+        allDay:
+          type: boolean
+        dtstart:
+          type: string
+        dtend:
+          type: string
+        tzid:
+          type: string
+        rrule:
+          type: string
+        exdates:
+          type: array
+          items:
+            type: string
+    MoveEventRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+        - calendarId
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+        expectedEtag:
+          type: string
+        calendarId:
+          type: string
+          format: uuid
+    DeleteCalendarRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - operationId
+        - expectedRevision
+      properties:
+        operationId:
+          type: string
+          format: uuid
+        expectedRevision:
+          type: integer
+        expectedEtag:
+          type: string
+security:
+  - foyerAccess: []
+  - developmentBearer: []

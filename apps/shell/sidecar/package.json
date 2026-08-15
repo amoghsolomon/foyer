@@ -1,0 +1,19 @@
+{
+  "name": "foyer-shell-pi-sidecar",
+  "version": "0.1.0",
+  "license": "GPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "start": "node src/main.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.1",
+    "pi-openai-fast-mode": "^0.3.0",
+    "typebox": "^1.3.7"
+  }
+}

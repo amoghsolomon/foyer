@@ -1,0 +1,25 @@
+[Unit]
+Description=Foyer portable canonical backup
+Documentation=file:///opt/foyer/deploy/backup/README.md
+After=docker.service network-online.target
+Wants=network-online.target
+# The host wrapper starts and stops Compose services itself. Do not bind this
+# unit to a hosting control plane.
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/foyer
+EnvironmentFile=-/etc/foyer/backup.env
+# Public recipient and S3 credentials only. The age identity is not present.
+ExecStart=/opt/foyer/deploy/backup/scripts/host.sh create
+TimeoutStartSec=30min
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+LockPersonality=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

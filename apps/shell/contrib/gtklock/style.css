@@ -1,0 +1,71 @@
+window,
+#window-box,
+#overview-background {
+  background-color: #0b0b0c;
+  color: #f1f1f2;
+}
+
+#clock-label,
+window.focused:not(.hidden) #clock-label {
+  color: rgba(241, 241, 242, 0.9);
+  font-family: "Adwaita Sans";
+  font-size: 22px;
+  font-weight: 500;
+}
+
+#date-label,
+window.focused:not(.hidden) #date-label {
+  color: rgba(241, 241, 242, 0.5);
+  font-family: "Adwaita Sans";
+  font-size: 14px;
+  font-weight: 400;
+}
+
+#lock-icon {
+  color: #f1f1f2;
+}
+
+#upcoming-label {
+  color: rgba(241, 241, 242, 0.72);
+  font-family: "Adwaita Sans";
+  font-size: 24px;
+  font-weight: 400;
+}
+
+#thought-label,
+#warning-label,
+#error-label {
+  color: rgba(241, 241, 242, 0.54);
+  font-family: "Adwaita Sans";
+  font-size: 15px;
+  font-weight: 400;
+}
+
+#input-field {
+  min-width: 420px;
+  min-height: 46px;
+  padding: 0 16px;
+  border: 1px solid rgba(241, 241, 242, 0.42);
+  border-radius: 23px;
+  background: rgba(11, 11, 12, 0.94);
+  box-shadow: none;
+  color: #f1f1f2;
+  caret-color: #f1f1f2;
+  font-family: "Adwaita Sans";
+  font-size: 16px;
+  font-weight: 400;
+}
+
+#input-field:focus {
+  border-color: #f1f1f2;
+  box-shadow: 0 0 0 1px rgba(241, 241, 242, 0.14);
+}
+
+#input-field selection {
+  background-color: #f1f1f2;
+  color: #0b0b0c;
+}
+
+#error-label {
+  color: #ff8a8a;
+}

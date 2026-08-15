@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily Foyer canonical backup
+Documentation=file:///opt/foyer/deploy/backup/README.md
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+Persistent=true
+RandomizedDelaySec=11m
+Unit=foyer-backup.service
+
+[Install]
+WantedBy=timers.target

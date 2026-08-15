@@ -1,0 +1,6 @@
+/target
+.shell/
+/.shell
+.env
+*.log
+sidecar/node_modules/

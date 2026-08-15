@@ -1,0 +1,25 @@
+[package]
+name = "foyer-shell-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+kokoro = ["dep:ort", "dep:zip"]
+
+[dependencies]
+anyhow.workspace = true
+async-channel.workspace = true
+foyer-shell-protocol.workspace = true
+foyer-shell-tts.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+cpal = "0.18.1"
+ort = { version = "=2.0.0-rc.13", optional = true }
+zip = { version = "2.4.2", default-features = false, optional = true }
+
+[[example]]
+name = "native_kokoro_bench"
+required-features = ["kokoro"]

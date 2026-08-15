@@ -1,0 +1,15 @@
+[Unit]
+Description=Foyer Shell shared local text-to-speech service
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/foyer-shell/environment
+ExecStart=%h/.local/bin/foyer-shell-tts
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=120
+
+[Install]
+WantedBy=graphical-session.target

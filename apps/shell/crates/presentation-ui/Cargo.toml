@@ -1,0 +1,16 @@
+[package]
+name = "foyer-shell-presentation-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gpui.workspace = true
+gpui-component.workspace = true
+foyer-shell-ui.workspace = true
+foyer-shell-protocol.workspace = true
+
+[lib]
+test = false
+doctest = false

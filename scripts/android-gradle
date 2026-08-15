@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+set -eu
+
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+if [ -z "${JAVA_HOME:-}" ] || [ ! -x "$JAVA_HOME/bin/javac" ] || [ ! -x "$JAVA_HOME/bin/jlink" ]; then
+    JAVAC_PATH=$(command -v javac || true)
+
+    if [ -n "$JAVAC_PATH" ]; then
+        RESOLVED_JAVAC=$(readlink -f "$JAVAC_PATH" 2>/dev/null || printf '%s' "$JAVAC_PATH")
+        JAVA_HOME=$(dirname "$(dirname "$RESOLVED_JAVAC")")
+        export JAVA_HOME
+    fi
+fi
+
+if [ -z "${JAVA_HOME:-}" ] || [ ! -x "$JAVA_HOME/bin/javac" ] || [ ! -x "$JAVA_HOME/bin/jlink" ]; then
+    echo "Foyer's Android build requires a full JDK with javac and jlink." >&2
+    echo "Install a JDK or set JAVA_HOME to one, then retry." >&2
+    exit 1
+fi
+
+exec "$ROOT_DIR/apps/android/gradlew" -p "$ROOT_DIR/apps/android" "$@"
+

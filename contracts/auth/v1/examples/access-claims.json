@@ -1,0 +1,9 @@
+{
+  "iss": "foyer-server",
+  "aud": "foyer-api",
+  "sub": "owner",
+  "deviceKeyId": "cn-I_WNMClehiVp51i_0VpOENW1upEerA8sEam5hn-s",
+  "iat": 1767225660,
+  "exp": 1767225960,
+  "jti": "5c2a1f0b-9d34-4e78-a1c0-8b7e6d5c4a32"
+}

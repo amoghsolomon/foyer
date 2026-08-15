@@ -1,0 +1,7 @@
+{
+  "accessToken": "<es256-jwt>",
+  "tokenType": "Bearer",
+  "expiresAt": "2026-01-01T00:06:00Z",
+  "userId": "owner",
+  "deviceKeyId": "cn-I_WNMClehiVp51i_0VpOENW1upEerA8sEam5hn-s"
+}
