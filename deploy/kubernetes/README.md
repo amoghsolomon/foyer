@@ -5,6 +5,8 @@ a separate Flux source and namespace. The `hetzner` overlay is single node, sing
 and uses the existing `local-path-retain` StorageClass. Images are promoted by immutable
 source commit tags after the required server and provider-free Pi Durable checks pass.
 The release commit can refer to the preceding image-build commit; never promote `*-main`.
+The checked-in overlay initially contains image placeholders. Replace every `*-main`
+image with a successfully built source commit tag before applying the Flux resources.
 
 Always explicitly select kubeconfig and context. This deployment targets the verified
 `admin@personal-website-hetzner` context and node `nobuntu`. Never use the default context.

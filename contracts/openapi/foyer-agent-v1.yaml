@@ -48,9 +48,8 @@ paths:
                 content: {type: string, minLength: 1, maxLength: 16000}
       responses:
         '202': {description: Accepted or replayed submissionId and public status}
-        '400': {description: Invalid message}
+        '400': {description: Invalid message or request exceeds 32768 bytes}
         '409': {description: Busy or request_conflict}
-        '413': {description: Request too large}
         '429': {description: Admission limit reached}
         '503': {description: provider_not_configured}
   /v1/agent/submissions/{id}:
