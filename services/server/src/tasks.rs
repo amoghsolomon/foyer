@@ -666,7 +666,9 @@ pub async fn move_task(
                         .await
                     {
                         Ok(()) => {}
-                        Err(error) if is_precondition(error.status()) => {
+                        Err(error)
+                            if is_precondition(error.status()) || error.status() == Some(404) =>
+                        {
                             if !operation_already_applied(&dav, &dest_href, &operation_id).await? {
                                 return Err(stale_dav(&task.revision));
                             }

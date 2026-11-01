@@ -3250,7 +3250,7 @@ pub async fn update_contact(
         &service.pool,
         operation_binding(
             user_id.clone(),
-            operation_id,
+            operation_id.clone(),
             "contact",
             contact_id.clone(),
             "update",
@@ -3267,15 +3267,18 @@ pub async fn update_contact(
                 )
                 .await?;
                 let (current_etag, raw) = dav_get(&dav, &contact.href).await?;
-                if !etags_match(&contact.etag, &current_etag) {
+                let mut card = parse_vcard(&raw)?;
+                if !etags_match(&contact.etag, &current_etag)
+                    && card.first_value("X-FOYER-OP") != Some(operation_id.as_str())
+                {
                     return Err(ContactsError::stale_etag(
                         &contact.etag,
                         Some(&current_etag),
                     ));
                 }
-                let mut card = parse_vcard(&raw)?;
                 card.ensure_envelope(&contact.uid);
                 apply_contact_patch(&mut card, &ContactPatch::from(&validated))?;
+                card.set_or_insert("X-FOYER-OP", operation_id.clone());
                 let serialized = serialize_vcard(&card);
                 let etag =
                     match dav_put(&dav, &contact.href, &serialized, Some(&current_etag), false)
@@ -4551,51 +4554,8 @@ pub async fn reconcile_user(state: &AppState, user_id: &str) -> Result<(), Strin
         .await
         .map_err(|error| error.to_string())?;
     guard.commit().await.map_err(|e| e.to_string())?;
-    if let Ok(client) = state.dav_client() {
-        let books = list_address_books(&state.pool, user_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        for book in books.address_books {
-            let href = DavHref::parse(&book.href).map_err(|error| error.to_string())?;
-            let collection = crate::dav::DavCollection {
-                href: href.clone(),
-                kind: CollectionKind::AddressBook,
-                display_name: Some(book.display_name.clone()),
-                etag: book
-                    .etag
-                    .as_deref()
-                    .and_then(|value| ETag::parse(value).ok()),
-                sync_token: book
-                    .sync_token
-                    .as_deref()
-                    .and_then(|value| crate::dav::SyncToken::parse(value).ok()),
-                supported_components: Vec::new(),
-            };
-            let _ = state
-                .projector
-                .remember_collection(user_id, &book.id, &collection)
-                .await;
-            if let Ok(plan) = state.projector.plan_sync(client, user_id, &href).await {
-                let mut tx = state
-                    .pool
-                    .begin()
-                    .await
-                    .map_err(|error| error.to_string())?;
-                state
-                    .projector
-                    .commit_checkpoint(
-                        &mut tx,
-                        user_id,
-                        &href,
-                        plan.page.sync_token.as_ref(),
-                        collection.etag.as_ref(),
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
-                tx.commit().await.map_err(|error| error.to_string())?;
-            }
-        }
-    }
+    // A full scan is authoritative; a later sync plan has not been projected.
+
     Ok(())
 }
 

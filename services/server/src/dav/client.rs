@@ -398,6 +398,32 @@ impl DavClient {
                 created: response.status == 201,
             });
         }
+        // A committed MOVE may outlive a rolled-back projection transaction. Recover
+        // only a missing source and the unchanged, identically named destination.
+        // A changed destination or a source that still exists remains a conflict.
+        if response.status == 404
+            && href.as_str().rsplit('/').next() == destination.as_str().rsplit('/').next()
+        {
+            let kind = if destination.as_str().ends_with(".vcf") {
+                CollectionKind::AddressBook
+            } else {
+                CollectionKind::Calendar
+            };
+            if matches!(self.get_one(href, kind).await, Err(DavError::NotFound(_))) {
+                let existing = self.get_one(destination, kind).await?;
+                if &existing.etag == expected {
+                    return Ok(DavWriteResult {
+                        href: destination.clone(),
+                        etag: Some(existing.etag),
+                        created: false,
+                    });
+                }
+                return Err(DavError::PreconditionFailed {
+                    expected: Some(expected.as_str().to_string()),
+                    detail: "The MOVE destination changed before recovery.".into(),
+                });
+            }
+        }
         Err(classify_response(
             response.status,
             &response.body,

@@ -512,3 +512,126 @@ async fn agent_proxy_requires_authentication_and_isolates_the_single_owner() {
     }
     server.abort();
 }
+
+#[tokio::test]
+async fn contact_update_and_move_recover_after_projection_rollback() {
+    let state = state().await;
+    let book_a = id();
+    let book_b = id();
+    for book in [&book_a, &book_b] {
+        let (status, value) = api(
+            &state,
+            "/v1/address-books",
+            json!({"operationId":id(),"id":book,"displayName":"Recovery"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+    }
+    let contact_id = id();
+    let (status, value) = api(&state, "/v1/contacts", json!({"operationId":id(),"id":contact_id,"addressBookId":book_a,"displayName":"Before rollback"})).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    sqlx::raw_sql("CREATE OR REPLACE FUNCTION foyer_test_reject_contact() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.display_name = 'Recovered contact' AND OLD.display_name <> NEW.display_name THEN RAISE EXCEPTION 'injected'; END IF; RETURN NEW; END $$; CREATE TRIGGER foyer_test_reject_contact BEFORE UPDATE ON contacts FOR EACH ROW EXECUTE FUNCTION foyer_test_reject_contact();").execute(&state.pool).await.unwrap();
+    let request =
+        json!({"operationId":id(),"expectedRevision":1,"displayName":"Recovered contact"});
+    let (failed, _) = api(
+        &state,
+        &format!("/v1/contacts/{contact_id}/update"),
+        request.clone(),
+    )
+    .await;
+    sqlx::raw_sql("DROP TRIGGER foyer_test_reject_contact ON contacts; DROP FUNCTION foyer_test_reject_contact();").execute(&state.pool).await.unwrap();
+    assert!(failed.is_server_error(), "{failed}");
+    let (status, recovered) = api(
+        &state,
+        &format!("/v1/contacts/{contact_id}/update"),
+        request,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{recovered}");
+    assert_eq!(recovered["revision"], 2);
+    sqlx::raw_sql("CREATE OR REPLACE FUNCTION foyer_test_reject_contact_move() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.address_book_id <> OLD.address_book_id THEN RAISE EXCEPTION 'injected'; END IF; RETURN NEW; END $$; CREATE TRIGGER foyer_test_reject_contact_move BEFORE UPDATE ON contacts FOR EACH ROW EXECUTE FUNCTION foyer_test_reject_contact_move();").execute(&state.pool).await.unwrap();
+    let request = json!({"operationId":id(),"expectedRevision":2,"addressBookId":book_b});
+    let (failed, _) = api(
+        &state,
+        &format!("/v1/contacts/{contact_id}/move"),
+        request.clone(),
+    )
+    .await;
+    sqlx::raw_sql("DROP TRIGGER foyer_test_reject_contact_move ON contacts; DROP FUNCTION foyer_test_reject_contact_move();").execute(&state.pool).await.unwrap();
+    assert!(failed.is_server_error(), "{failed}");
+    let (status, recovered) =
+        api(&state, &format!("/v1/contacts/{contact_id}/move"), request).await;
+    assert_eq!(status, StatusCode::OK, "{recovered}");
+    assert_eq!(recovered["addressBookId"], book_b);
+    assert_eq!(recovered["revision"], 3);
+}
+
+#[tokio::test]
+async fn moved_resource_retry_requires_the_unchanged_destination() {
+    let state = state().await;
+    let owner = user(&state);
+    let client = state.dav_client().unwrap();
+    let a = client
+        .create_calendar(
+            owner,
+            &NewCalendar {
+                collection_id: id(),
+                display_name: "A".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let b = client
+        .create_calendar(
+            owner,
+            &NewCalendar {
+                collection_id: id(),
+                display_name: "B".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let uid = id();
+    let source = DavHref::parse(&format!("{}{uid}.ics", a.href)).unwrap();
+    let destination = DavHref::parse(&format!("{}{uid}.ics", b.href)).unwrap();
+    put(
+        &state,
+        owner,
+        &source,
+        event(&uid, "Before move"),
+        DavMediaType::ICalendar,
+    )
+    .await;
+    let before = client
+        .get_resource(owner, &source, CollectionKind::Calendar)
+        .await
+        .unwrap();
+    client
+        .move_resource(owner, &source, &destination, &before.etag)
+        .await
+        .unwrap();
+    client
+        .move_resource(owner, &source, &destination, &before.etag)
+        .await
+        .expect("retry recovers the same resource");
+    let current = client
+        .get_resource(owner, &destination, CollectionKind::Calendar)
+        .await
+        .unwrap();
+    client
+        .put_resource(
+            owner,
+            &destination,
+            &DavPayload::from_raw(DavMediaType::ICalendar, event(&uid, "External edit")).unwrap(),
+            PutPrecondition::IfMatch(current.etag),
+        )
+        .await
+        .unwrap();
+    assert!(
+        client
+            .move_resource(owner, &source, &destination, &before.etag)
+            .await
+            .is_err(),
+        "an external edit must not be claimed as a successful retry"
+    );
+}
