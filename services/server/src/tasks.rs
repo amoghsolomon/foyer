@@ -829,6 +829,11 @@ async fn put_patched_todo(dav: &DavBackend, task: &Task, patch: &TodoPatch) -> A
         Err(error) => return Err(error.into_api()),
     };
     if observed.etag != task.etag {
+        if let Some(operation_id) = patch.operation_id.as_deref() {
+            if operation_already_applied(dav, &task.href, operation_id).await? {
+                return Ok(());
+            }
+        }
         return Err(ApiError::conflict(
             "The DAV resource changed. Refresh and retry.",
         ));
@@ -878,82 +883,15 @@ async fn operation_already_applied(
 pub async fn reconcile_user(state: &AppState, user_id: &str) -> ApiResult<()> {
     let dav = dav_from_state(state)?;
     let mut tx = state.pool.begin().await.map_err(database_error)?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 1))")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
     project_user(&mut tx, &dav, user_id).await?;
     tx.commit().await.map_err(database_error)?;
-    if let Ok(client) = state.dav_client() {
-        commit_task_checkpoints(state, client, user_id).await?;
-    }
+    // Full collection projection is authoritative. Do not advance a later, unprojected sync token.
     Ok(())
-}
-
-async fn commit_task_checkpoints(
-    state: &AppState,
-    client: &DavClient,
-    user_id: &str,
-) -> ApiResult<()> {
-    let lists = sqlx::query_as::<_, TaskList>(
-        "SELECT id, user_id, name, position, href, etag, revision, created_at, updated_at, deleted_at
-         FROM task_lists
-         WHERE user_id = $1 AND deleted_at IS NULL",
-    )
-    .bind(user_id)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(database_error)?;
-    for list in lists {
-        let href = DavHref::parse(&list.href).map_err(dav_error_to_api)?;
-        let collection = crate::dav::DavCollection {
-            href: href.clone(),
-            kind: CollectionKind::TaskList,
-            display_name: Some(list.name.clone()),
-            etag: list
-                .etag
-                .as_deref()
-                .and_then(|value| ETag::parse(value).ok()),
-            sync_token: None,
-            supported_components: vec!["VTODO".into()],
-        };
-        let remembered = state
-            .projector
-            .remember_collection(user_id, &list.id, &collection)
-            .await
-            .map_err(dav_error_to_api)?;
-        if let Ok(plan) = state.projector.plan_sync(client, user_id, &href).await {
-            let mut tx = state.pool.begin().await.map_err(database_error)?;
-            state
-                .projector
-                .commit_checkpoint(
-                    &mut tx,
-                    user_id,
-                    &href,
-                    plan.page.sync_token.as_ref(),
-                    remembered
-                        .collection_etag
-                        .as_deref()
-                        .and_then(|value| ETag::parse(value).ok())
-                        .as_ref(),
-                )
-                .await
-                .map_err(dav_error_to_api)?;
-            tx.commit().await.map_err(database_error)?;
-        }
-    }
-    Ok(())
-}
-
-fn dav_error_to_api(error: crate::dav::DavError) -> ApiError {
-    match error {
-        crate::dav::DavError::PreconditionFailed { expected, .. } => {
-            ApiError::stale_etag(expected.unwrap_or_default(), None)
-        }
-        crate::dav::DavError::NotFound(message) => ApiError::not_found(message),
-        crate::dav::DavError::Conflict(message) => ApiError::conflict(message),
-        crate::dav::DavError::OperationConflict => {
-            ApiError::conflict("this DAV operation id is already bound to a different request")
-        }
-        crate::dav::DavError::InvalidRequest(message) => ApiError::invalid_request(message),
-        other => ApiError::unavailable(other.to_string()),
-    }
 }
 
 async fn project_user(
@@ -964,7 +902,13 @@ async fn project_user(
     let root = tasks_root(user_id);
     let listing = match dav.propfind(&root, 1).await {
         Ok(listing) => listing,
-        Err(error) if error.status() == Some(404) => return Ok(()),
+        Err(error) if error.status() == Some(404) => {
+            sqlx::query("UPDATE tasks SET deleted_at = NOW(), revision = revision + 1, updated_at = NOW() WHERE user_id = $1 AND deleted_at IS NULL")
+                .bind(user_id).execute(&mut **tx).await.map_err(database_error)?;
+            sqlx::query("UPDATE task_lists SET deleted_at = NOW(), revision = revision + 1, updated_at = NOW() WHERE user_id = $1 AND deleted_at IS NULL")
+                .bind(user_id).execute(&mut **tx).await.map_err(database_error)?;
+            return Ok(());
+        }
         Err(error) => return Err(error.into_api()),
     };
     let mut seen_lists = Vec::new();
@@ -986,6 +930,15 @@ async fn project_user(
         project_list_members(tx, dav, user_id, &list).await?;
         seen_lists.push(list.id);
     }
+    sqlx::query(
+        "UPDATE tasks SET deleted_at = NOW(), revision = revision + 1, updated_at = NOW()
+        WHERE user_id = $1 AND deleted_at IS NULL AND NOT (list_id = ANY($2))",
+    )
+    .bind(user_id)
+    .bind(&seen_lists)
+    .execute(&mut **tx)
+    .await
+    .map_err(database_error)?;
     sqlx::query(
         "UPDATE task_lists SET deleted_at = NOW(), revision = revision + 1, updated_at = NOW()
          WHERE user_id = $1 AND deleted_at IS NULL AND NOT (id = ANY($2))",
@@ -1013,10 +966,24 @@ async fn project_list_members(
         if item.collection || item.href == list.href {
             continue;
         }
+        let old_id = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM tasks WHERE user_id = $1 AND href = $2",
+        )
+        .bind(user_id)
+        .bind(&item.href)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(database_error)?;
+        if let Some(id) = old_id {
+            seen.push(id);
+        }
         match project_task_href(tx, dav, user_id, &list.id, &item.href).await {
             Ok(task) => seen.push(task.id),
             Err(error) => {
-                tracing::warn!(href = %item.href, error = ?error, "skipping unreadable VTODO");
+                if error.status_code().is_server_error() {
+                    return Err(error);
+                }
+                tracing::warn!(href = %item.href, "retaining last-good unreadable VTODO");
             }
         }
     }
@@ -1054,7 +1021,17 @@ async fn project_list_from_dav(
     name: &str,
     position: i32,
 ) -> ApiResult<TaskList> {
-    let listing = dav.propfind(href, 0).await.ok();
+    let owner = sqlx::query_scalar::<_, String>("SELECT user_id FROM task_lists WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(database_error)?;
+    let id = if owner.as_deref().is_some_and(|owner| owner != user_id) {
+        crate::dav::scoped_id("task_lists", user_id, id)
+    } else {
+        id.to_string()
+    };
+    let listing = Some(dav.propfind(href, 0).await.map_err(DavError::into_api)?);
     let etag = listing
         .as_ref()
         .and_then(|value| value.items.first())
@@ -1091,9 +1068,9 @@ async fn project_list_from_dav(
                 THEN EXCLUDED.updated_at
                 ELSE task_lists.updated_at
             END,
-            deleted_at = NULL",
+            deleted_at = NULL WHERE task_lists.user_id = EXCLUDED.user_id",
     )
-    .bind(id)
+    .bind(&id)
     .bind(user_id)
     .bind(name)
     .bind(position)
@@ -1105,7 +1082,11 @@ async fn project_list_from_dav(
     .execute(&mut **tx)
     .await
     .map_err(database_error)?;
-    load_required_list(tx, id).await
+    let list = load_required_list(tx, &id).await?;
+    if list.user_id != user_id {
+        return Err(ApiError::conflict("Foreign task-list identity."));
+    }
+    Ok(list)
 }
 
 async fn project_task_href(
@@ -1118,6 +1099,18 @@ async fn project_task_href(
     let resource = dav.get(href).await.map_err(DavError::into_api)?;
     let calendar = parse_calendar(&resource.body).map_err(format_error)?;
     let fields = extract_todo(&calendar).map_err(format_error)?;
+    let owner = sqlx::query_scalar::<_, String>("SELECT user_id FROM tasks WHERE id = $1")
+        .bind(&fields.uid)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(database_error)?;
+    let id = if uuid::Uuid::parse_str(&fields.uid).is_err()
+        || owner.as_deref().is_some_and(|owner| owner != user_id)
+    {
+        crate::dav::scoped_id("tasks", user_id, &fields.uid)
+    } else {
+        fields.uid.clone()
+    };
     let now = Utc::now();
     let due_local = fields.due.as_ref().map(|due| due.local.clone());
     let due_time_zone = fields.due.as_ref().and_then(|due| due.time_zone.clone());
@@ -1167,9 +1160,9 @@ async fn project_task_href(
                 THEN EXCLUDED.updated_at
                 ELSE tasks.updated_at
             END,
-            deleted_at = NULL",
+            deleted_at = NULL WHERE tasks.user_id = EXCLUDED.user_id",
     )
-    .bind(&fields.uid)
+    .bind(&id)
     .bind(user_id)
     .bind(list_id)
     .bind(&fields.title)
@@ -1188,7 +1181,11 @@ async fn project_task_href(
     .execute(&mut **tx)
     .await
     .map_err(database_error)?;
-    load_required_task(tx, &fields.uid).await
+    let task = load_required_task(tx, &id).await?;
+    if task.user_id != user_id {
+        return Err(ApiError::conflict("Foreign task identity."));
+    }
+    Ok(task)
 }
 
 async fn tombstone_list(tx: &mut Transaction<'_, Postgres>, id: &str) -> ApiResult<TaskList> {
@@ -1232,6 +1229,16 @@ where
         operation,
         request_body,
     } = binding;
+    crate::dav::bind_intent(
+        pool,
+        &user_id,
+        &operation_id,
+        entity_type,
+        &entity_id,
+        operation,
+        &request_body,
+    )
+    .await?;
     let mut tx = pool.begin().await.map_err(database_error)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(&operation_id)
@@ -1775,7 +1782,11 @@ fn list_id_from_href(user_id: &str, href: &str) -> Option<String> {
     if rest.is_empty() || rest.contains('/') {
         return None;
     }
-    Uuid::parse_str(rest).ok().map(|uuid| uuid.to_string())
+    Some(
+        Uuid::parse_str(rest)
+            .map(|uuid| uuid.to_string())
+            .unwrap_or_else(|_| crate::dav::scoped_id("task_lists", user_id, rest)),
+    )
 }
 
 async fn ensure_user_home(dav: &DavBackend, user_id: &str) -> ApiResult<()> {
@@ -2577,6 +2588,10 @@ impl DavBackend {
             Self::Memory(dav) => dav.mkcol(href, name, order, _precondition),
             Self::Client(client) => {
                 let user_id = user_id_from_href(href)?;
+                // create_task_list owns creation of the principal and tasks home.
+                if href == user_root(&user_id) || href == tasks_root(&user_id) {
+                    return Ok(());
+                }
                 let collection_id = collection_id_from_href(href)?;
                 client
                     .create_task_list(
@@ -2654,29 +2669,34 @@ async fn client_propfind(
             ctag: None,
         });
     }
+    if href == tasks_root(&user_id) {
+        let collections = client
+            .list_collection(&user_id, &parsed)
+            .await
+            .map_err(shared_dav_error)?;
+        return Ok(DavListing {
+            items: collections
+                .into_iter()
+                .map(|collection| DavItem {
+                    href: collection.href.as_str().to_string(),
+                    etag: collection
+                        .etag
+                        .as_ref()
+                        .map(|etag| etag.as_str().to_string()),
+                    displayname: collection.display_name,
+                    collection: true,
+                    calendar_order: None,
+                })
+                .collect(),
+            sync_token: None,
+            ctag: None,
+        });
+    }
     let page = client
         .sync_collection(&user_id, &parsed, None)
         .await
         .map_err(shared_dav_error)?;
     let mut items = Vec::new();
-    if href.contains("/tasks/") && href.matches('/').count() <= 3 {
-        let collections = client
-            .list_collection(&user_id, &parsed)
-            .await
-            .map_err(shared_dav_error)?;
-        for collection in collections {
-            items.push(DavItem {
-                href: collection.href.as_str().to_string(),
-                etag: collection
-                    .etag
-                    .as_ref()
-                    .map(|etag| etag.as_str().to_string()),
-                displayname: collection.display_name,
-                collection: true,
-                calendar_order: None,
-            });
-        }
-    }
     for change in page.upserts {
         items.push(DavItem {
             href: change.href.as_str().to_string(),

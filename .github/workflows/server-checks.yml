@@ -1,0 +1,52 @@
+name: Server checks
+on:
+  workflow_call:
+  pull_request:
+    paths: ['services/**', 'contracts/**', 'scripts/test-server', '.github/workflows/**']
+  push:
+    branches: [main]
+    paths: ['services/**', 'contracts/**', 'scripts/test-server', '.github/workflows/**']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_PASSWORD: foyer-isolated-test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd 'pg_isready -U postgres' --health-interval 5s --health-retries 20
+    env:
+      FOYER_TEST_DATABASE_URL: postgres://postgres:foyer-isolated-test@127.0.0.1:5432/postgres
+      FOYER_DAV_URL: http://127.0.0.1:5232
+      FOYER_DAV_USERNAME: foyer
+      FOYER_DAV_PASSWORD: foyer-dev-dav-password-do-not-use-outside-development
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Start isolated Radicale
+        run: |
+          docker run -d --name foyer-check-radicale -p 127.0.0.1:5232:5232 \
+            -v "$PWD/deploy/radicale/config:/etc/radicale/config:ro" \
+            -v "$PWD/deploy/radicale/rights:/etc/radicale/rights:ro" \
+            -v "$PWD/deploy/radicale/users.dev:/etc/radicale/users:ro" kozea/radicale:3.7.3
+          for attempt in $(seq 1 30); do
+            curl -sf -u "$FOYER_DAV_USERNAME:$FOYER_DAV_PASSWORD" "$FOYER_DAV_URL/" >/dev/null && exit 0
+            sleep 1
+          done
+          exit 1
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt
+      - name: Verify real PostgreSQL and DAV integrations
+        run: ./scripts/test-server
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.19.0'
+          cache: npm
+          cache-dependency-path: services/durable-agent/package-lock.json
+      - name: Verify Pi Durable without paid inference
+        run: |
+          npm --prefix services/durable-agent ci --ignore-scripts --no-audit --no-fund
+          npm --prefix services/durable-agent test

@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: Service
+metadata: {name: server}
+spec:
+  selector: {app: foyer-server}
+  ports: [{port: 3583}]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: agent}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path-retain
+  resources:
+    requests: {storage: 1Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: server}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: foyer-server}
+  template:
+    metadata:
+      labels: {app: foyer-server}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: server
+          image: ghcr.io/amoghsolomon/foyer:server-main
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: foyer-database, key: POSTGRES_PASSWORD}}
+            - {name: FOYER_DATABASE_URL, value: 'postgres://foyer:$(POSTGRES_PASSWORD)@postgres:5432/foyer'}
+            - {name: FOYER_SERVER_ENV, value: production}
+            - {name: FOYER_SERVER_BIND, value: '0.0.0.0:3583'}
+            - {name: FOYER_AUTH_SIGNING_KEY_PATH, value: /run/secrets/foyer/token-signing.pem}
+            - {name: FOYER_AUTH_KEY_ID, value: foyer-hetzner-20261101}
+            - {name: FOYER_AUTH_ISSUER, value: foyer-hetzner}
+            - {name: FOYER_AUTH_API_AUDIENCE, value: foyer-api}
+            - {name: FOYER_POWERSYNC_URL, value: 'http://powersync.foyer.svc.cluster.local:8080'}
+            - {name: FOYER_POWERSYNC_AUDIENCE, value: foyer-powersync}
+            - {name: FOYER_DAV_URL, value: 'http://radicale:5232'}
+            - {name: FOYER_DAV_USERNAME, value: foyer}
+            - name: FOYER_DAV_PASSWORD
+              valueFrom: {secretKeyRef: {name: foyer-dav, key: FOYER_DAV_PASSWORD}}
+            - {name: FOYER_AGENT_URL, value: 'http://127.0.0.1:3584/'}
+            - {name: FOYER_AGENT_OWNER_ID, value: owner}
+          ports: [{containerPort: 3583}]
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: '1', memory: 512Mi}
+          readinessProbe: {httpGet: {path: /health/ready, port: 3583}, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /health/live, port: 3583}, initialDelaySeconds: 30}
+          volumeMounts:
+            - {name: signing, mountPath: /run/secrets/foyer, readOnly: true}
+        - name: agent
+          image: ghcr.io/amoghsolomon/foyer:agent-main
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: '1', memory: 768Mi}
+          readinessProbe:
+            exec: {command: [node, -e, "fetch('http://127.0.0.1:3584/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]}
+            periodSeconds: 10
+          # Kubelet probes cannot reach the pod loopback listener from the node. Use a local exec probe.
+          startupProbe:
+            exec: {command: [node, -e, "fetch('http://127.0.0.1:3584/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]}
+            failureThreshold: 30
+            periodSeconds: 2
+          volumeMounts:
+            - {name: agent, mountPath: /data/agent}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: signing
+          secret: {secretName: foyer-signing, defaultMode: 288}
+        - {name: agent, persistentVolumeClaim: {claimName: agent}}
+        - {name: tmp, emptyDir: {}}

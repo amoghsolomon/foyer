@@ -1,0 +1,109 @@
+openapi: 3.1.0
+info:
+  title: Foyer single-thread agent
+  version: 1.0.0
+  description: |
+    One owner, one persistent Pi Durable conversation (threadId main). All routes require
+    a Foyer API bearer token. Foreign owners receive 404; unauthenticated requests 401.
+    No memory, tools, schedules or model credentials are exposed. Responses use no-store.
+    A ready service can be unconfigured; message submission then returns 503 without inference.
+security:
+  - bearerAuth: []
+paths:
+  /v1/agent:
+    get:
+      summary: Current public snapshot (last 100 transcript entries)
+      responses:
+        '200':
+          description: Snapshot with threadId, configured, busy, entries, partial text and retryAt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Snapshot'}
+  /v1/agent/history:
+    get:
+      summary: Paginated public transcript, newest entries first
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+      responses:
+        '200':
+          description: threadId, entries and nullable opaque nextCursor
+  /v1/agent/messages:
+    post:
+      summary: Submit text with a client generated idempotency key
+      description: |
+        Reusing requestId with identical text returns the same submission. Different text
+        returns 409. Busy threads reject new submissions with 409; retry the same requestId
+        after completion. The persisted key binding survives a process crash. JSON is limited
+        to 32768 bytes. Admission is limited to 10000 distinct keys per thread.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requestId, content]
+              properties:
+                requestId: {type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$'}
+                content: {type: string, minLength: 1, maxLength: 16000}
+      responses:
+        '202': {description: Accepted or replayed submissionId and public status}
+        '400': {description: Invalid message}
+        '409': {description: Busy or request_conflict}
+        '413': {description: Request too large}
+        '429': {description: Admission limit reached}
+        '503': {description: provider_not_configured}
+  /v1/agent/submissions/{id}:
+    get:
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        '200': {description: threadId, submissionId and public status with optional answerId/reason}
+        '404': {description: Unknown submission}
+  /v1/agent/cancel:
+    post:
+      summary: Cancel the current generation using Pi Durable abort
+      responses:
+        '200': {description: threadId main and cancelled true}
+  /v1/agent/events:
+    get:
+      summary: Server sent public snapshots
+      description: |
+        Each event has event name snapshot and the full Snapshot JSON in data. Reconnect
+        by making a new authenticated request; the first event is the latest state, so no
+        Last-Event-ID is required. Heartbeats run every 15 seconds. Connections close after
+        240 seconds to require renewed authentication. At most 8 simultaneous streams.
+      responses:
+        '200':
+          description: Text event stream
+          content:
+            text/event-stream:
+              schema: {type: string}
+        '429': {description: Too many streams}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+  schemas:
+    Snapshot:
+      type: object
+      required: [threadId, configured, busy, entries, partial, retryAt]
+      properties:
+        threadId: {type: string, const: main}
+        configured: {type: boolean}
+        busy: {type: boolean}
+        entries:
+          type: array
+          items: {$ref: '#/components/schemas/Entry'}
+        partial: {type: string}
+        retryAt: {type: [number, 'null']}
+    Entry:
+      type: object
+      properties:
+        id: {type: integer}
+        messages:
+          type: array
+          items:
+            type: object
+            properties:
+              role: {type: string, enum: [user, assistant]}
+              text: {type: string}

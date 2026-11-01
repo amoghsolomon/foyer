@@ -109,6 +109,10 @@ impl DavPayload {
         self.raw
     }
 
+    pub fn operation_id(&self) -> Option<String> {
+        first_property(&unfold(&self.raw), "X-FOYER-OP")
+    }
+
     pub fn uid(&self) -> Option<String> {
         first_property(&unfold(&self.raw), "UID")
     }

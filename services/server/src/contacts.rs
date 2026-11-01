@@ -3627,6 +3627,18 @@ async fn project_address_book(
             }
             continue;
         }
+        // Presence in the complete listing protects the last-good row even if parsing fails.
+        let old_id = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM contacts WHERE user_id = $1 AND href = $2",
+        )
+        .bind(user_id)
+        .bind(&item.href)
+        .fetch_optional(&service.pool)
+        .await
+        .map_err(database_error)?;
+        if let Some(id) = old_id {
+            seen.insert(id);
+        }
         let Some(etag) = item.etag.clone() else {
             continue;
         };
@@ -3643,7 +3655,14 @@ async fn project_address_book(
             tracing::warn!(href = %item.href, "skipping vCard without UID");
             continue;
         }
-        let id = id_from_uid(&fields.uid);
+        let id = crate::dav::owned_id(
+            &service.pool,
+            "contacts",
+            user_id,
+            &id_from_uid(&fields.uid),
+        )
+        .await
+        .map_err(database_error)?;
         upsert_projected_contact(
             &service.pool,
             user_id,
@@ -3691,6 +3710,9 @@ async fn upsert_projected_book(
     } else {
         stable_uuid(&format!("foyer.book.{user_id}"), &item.href)
     };
+    let id = crate::dav::owned_id(pool, "contacts_address_books", user_id, &id)
+        .await
+        .map_err(database_error)?;
     let display_name = item
         .display_name
         .clone()
@@ -4030,6 +4052,23 @@ where
         operation,
         request_body,
     } = binding;
+    crate::dav::bind_intent(
+        pool,
+        &user_id,
+        &operation_id,
+        entity_type,
+        &entity_id,
+        operation,
+        &request_body,
+    )
+    .await
+    .map_err(|error| {
+        if error.status_code() == axum::http::StatusCode::CONFLICT {
+            ContactsError::conflict("Operation id already bound.")
+        } else {
+            ContactsError::unavailable("Failed to bind DAV intent.")
+        }
+    })?;
     let mut tx = pool.begin().await.map_err(database_error)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(&operation_id)
@@ -4502,9 +4541,16 @@ pub fn routes() -> Router<AppState> {
 
 pub async fn reconcile_user(state: &AppState, user_id: &str) -> Result<(), String> {
     let service = ContactsService::from_state(state, user_id).map_err(|error| error.to_string())?;
+    let mut guard = state.pool.begin().await.map_err(|e| e.to_string())?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 1))")
+        .bind(user_id)
+        .execute(&mut *guard)
+        .await
+        .map_err(|e| e.to_string())?;
     project_user(&service, user_id)
         .await
         .map_err(|error| error.to_string())?;
+    guard.commit().await.map_err(|e| e.to_string())?;
     if let Ok(client) = state.dav_client() {
         let books = list_address_books(&state.pool, user_id)
             .await

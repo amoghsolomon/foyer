@@ -155,12 +155,12 @@ impl DavClient {
         } else {
             paths.principal.clone()
         };
-        let calendar_home = if paths.ensure_owned(&discovered_calendar_home).is_ok() {
+        let calendar_home = if discovered_calendar_home == paths.calendar_home {
             discovered_calendar_home
         } else {
             paths.calendar_home.clone()
         };
-        let addressbook_home = if paths.ensure_owned(&discovered_addressbook_home).is_ok() {
+        let addressbook_home = if discovered_addressbook_home == paths.addressbook_home {
             discovered_addressbook_home
         } else {
             paths.addressbook_home.clone()
@@ -309,7 +309,12 @@ impl DavClient {
                 created: response.status == 201,
             });
         }
-        if response.status == 412 && matches!(precondition, PutPrecondition::IfNoneMatchStar) {
+        if response.status == 412
+            && (matches!(precondition, PutPrecondition::IfNoneMatchStar)
+                || payload.operation_id().is_some())
+        {
+            // Exact semantic payload equality recovers a write accepted before its projection committed.
+            // The API durably bound the request ID and arguments before reaching this method.
             return self.recover_create(href, payload).await;
         }
         Err(classify_response(
@@ -336,7 +341,7 @@ impl DavClient {
             return Ok(());
         }
         if response.status == 404 {
-            return Err(DavError::NotFound("DAV resource not found.".into()));
+            return Ok(());
         }
         Err(classify_response(
             response.status,
@@ -672,7 +677,11 @@ impl DavClient {
             DavMediaType::ICalendar => CollectionKind::Calendar,
         };
         let existing = self.get_one(href, kind).await?;
-        if existing.payload.semantically_eq(payload) {
+        if existing.payload.semantically_eq(payload)
+            || payload.operation_id().is_some_and(|operation| {
+                existing.payload.operation_id().as_deref() == Some(operation.as_str())
+            })
+        {
             return Ok(DavWriteResult {
                 href: href.clone(),
                 etag: Some(existing.etag),

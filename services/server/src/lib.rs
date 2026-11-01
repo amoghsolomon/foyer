@@ -15,6 +15,7 @@ use crate::auth::{AuthLimiter, Principal, TokenSigner, session_body, sync_creden
 use crate::dav::{DavClient, DavConfig, Projector};
 use crate::error::{ApiError, ApiResult};
 
+pub mod agent;
 pub mod auth;
 pub mod bookmarks;
 pub mod calendar;
@@ -38,6 +39,7 @@ pub struct AppState {
     pub auth_limiter: AuthLimiter,
     pub dav: Option<DavClient>,
     pub projector: Projector,
+    pub agent: Option<agent::Client>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -97,6 +99,7 @@ pub async fn app_state(config: Config) -> Result<AppState, String> {
         auth_limiter: AuthLimiter::new(),
         dav,
         projector,
+        agent: agent::Client::from_env()?,
     };
     if state.dav.is_some() {
         let background = state.clone();
@@ -135,6 +138,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/notes/{noteId}/update", post(notes::update_note))
         .route("/v1/notes/{noteId}/move", post(notes::move_note))
         .route("/v1/notes/{noteId}/delete", post(notes::delete_note))
+        .merge(agent::routes())
         .merge(tasks::routes())
         .merge(contacts::routes())
         .merge(calendar::routes())

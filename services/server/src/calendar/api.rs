@@ -19,7 +19,7 @@ use crate::auth::Principal;
 use crate::calendar::{
     CalendarError, CreateCalendar, Date, DeleteCommand, EventDraft, EventRecord, MoveEvent,
     RenameCalendar, UpdateEvent, event_from_ical, expand_event, new_event_document, parse_ical,
-    parse_uuid, patch_event_document, serialize_ical, unix_now,
+    parse_uuid, patch_event_document, serialize_ical,
 };
 use crate::dav::{
     CollectionKind, DavHref, DavMediaType, DavPayload, ETag, NewCalendar, PutPrecondition,
@@ -526,7 +526,7 @@ pub async fn create_event(
         &state.pool,
         OperationBinding {
             user_id: user_id.clone(),
-            operation_id,
+            operation_id: operation_id.clone(),
             entity_type: "event",
             entity_id: id.clone(),
             operation: "create",
@@ -544,7 +544,15 @@ pub async fn create_event(
                 let calendar = ensure_live_calendar(tx, &user_id, &calendar_id).await?;
                 ensure_event_quota(tx, &user_id).await?;
                 let href = format!("{}{}.ics", calendar.href, uid);
-                let document = map_cal(new_event_document(&uid, &draft, unix_now()))?;
+                let mut document = map_cal(new_event_document(
+                    &uid,
+                    &draft,
+                    operation_time(tx, &operation_id).await?,
+                ))?;
+                map_cal(document.vevent_mut())?.set_or_insert(
+                    "X-FOYER-OP",
+                    crate::calendar::IcalProperty::new("X-FOYER-OP", &operation_id),
+                );
                 let body = serialize_ical(&document);
                 let parsed_href = DavHref::parse(&href).map_err(map_dav)?;
                 let payload =
@@ -624,8 +632,12 @@ pub async fn update_event(
                 map_cal(patch_event_document(
                     &mut document,
                     &command.draft,
-                    unix_now(),
+                    operation_time(tx, &command.operation_id).await?,
                 ))?;
+                map_cal(document.vevent_mut())?.set_or_insert(
+                    "X-FOYER-OP",
+                    crate::calendar::IcalProperty::new("X-FOYER-OP", &command.operation_id),
+                );
                 let body = serialize_ical(&document);
                 let href = DavHref::parse(&current.href).map_err(map_dav)?;
                 let dav_payload =
@@ -828,32 +840,52 @@ pub async fn expand_events(
 }
 
 pub async fn reconcile_user(state: &AppState, user_id: &str) -> Result<(), String> {
-    let client = match state.dav.as_ref() {
-        Some(client) => client,
-        None => return Ok(()),
+    let Some(client) = state.dav.as_ref() else {
+        return Ok(());
     };
     let discovered = client
         .discover(user_id)
         .await
         .map_err(|error| error.to_string())?;
+    let mut seen_collections = Vec::new();
+    let mut errors = Vec::new();
     for collection in discovered
         .collections
         .into_iter()
-        .filter(|collection| collection.kind == CollectionKind::Calendar)
+        .filter(|c| c.kind == CollectionKind::Calendar)
     {
-        let collection_id = collection
+        seen_collections.push(collection.href.as_str().to_string());
+        let existing = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM calendar_calendars WHERE user_id = $1 AND href = $2",
+        )
+        .bind(user_id)
+        .bind(collection.href.as_str())
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        let candidate = collection
             .href
             .as_str()
             .trim_end_matches('/')
             .rsplit('/')
             .next()
-            .unwrap_or("calendar")
-            .to_string();
-        let remembered = state
+            .unwrap_or("calendar");
+        let candidate = uuid::Uuid::parse_str(candidate)
+            .map(|id| id.to_string())
+            .unwrap_or_else(|_| {
+                crate::dav::scoped_id("calendar_calendars", user_id, collection.href.as_str())
+            });
+        let collection_id = match existing {
+            Some(id) => id,
+            None => crate::dav::owned_id(&state.pool, "calendar_calendars", user_id, &candidate)
+                .await
+                .map_err(|e| e.to_string())?,
+        };
+        state
             .projector
             .remember_collection(user_id, &collection_id, &collection)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|e| e.to_string())?;
         let plan = match state
             .projector
             .plan_sync(client, user_id, &collection.href)
@@ -861,95 +893,154 @@ pub async fn reconcile_user(state: &AppState, user_id: &str) -> Result<(), Strin
         {
             Ok(plan) => plan,
             Err(error) => {
-                let _ = state
+                state
                     .projector
                     .record_collection_error(user_id, &collection.href, &error)
-                    .await;
+                    .await
+                    .map_err(|e| e.to_string())?;
+                errors.push(error.to_string());
                 continue;
             }
         };
-        let mut tx = state
-            .pool
-            .begin()
-            .await
-            .map_err(|error| error.to_string())?;
-        if plan.page.token_reset {
-            sqlx::query(
-                "UPDATE calendar_events
-                 SET deleted_at = NOW(), revision = revision + 1, updated_at = NOW()
-                 WHERE user_id = $1 AND calendar_id = $2 AND deleted_at IS NULL",
-            )
+        // Never advance a token past an item we could not read. The next pass retries it.
+        if let Some(error) = plan
+            .resources
+            .iter()
+            .find_map(|fetch| fetch.result.as_ref().err())
+        {
+            state
+                .projector
+                .record_collection_error(user_id, &collection.href, error)
+                .await
+                .map_err(|e| e.to_string())?;
+            errors.push(error.to_string());
+            continue;
+        }
+        let mut tx = state.pool.begin().await.map_err(|e| e.to_string())?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 1))")
             .bind(user_id)
-            .bind(&remembered.collection_id)
             .execute(&mut *tx)
             .await
-            .map_err(|error| error.to_string())?;
-        }
-        upsert_calendar_projection(&mut tx, user_id, &remembered.collection_id, &collection)
+            .map_err(|e| e.to_string())?;
+        upsert_calendar_projection(&mut tx, user_id, &collection_id, &collection)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|e| e.to_string())?;
+        let mut seen_hrefs = Vec::new();
+        let mut malformed = false;
         for fetch in &plan.resources {
-            match &fetch.result {
-                Ok(resource) => {
-                    if let Err(CalendarError::Parse(_)) = event_from_ical(
-                        resource.href.as_str(),
-                        user_id,
-                        &remembered.collection_id,
-                        resource.href.as_str(),
-                        resource.etag.as_str(),
-                        1,
-                        &Utc::now().to_rfc3339(),
-                        &Utc::now().to_rfc3339(),
-                        resource.payload.raw(),
-                    ) {
-                        continue;
-                    }
-                    let id = stable_event_id(user_id, resource.href.as_str());
-                    insert_event_projection(
-                        &mut tx,
-                        &id,
-                        user_id,
-                        &remembered.collection_id,
-                        resource.payload.uid().as_deref().unwrap_or(&id),
-                        resource.href.as_str(),
-                        resource.etag.as_str(),
-                        resource.payload.raw(),
-                        1,
+            let resource = fetch.result.as_ref().expect("all resources checked");
+            seen_hrefs.push(resource.href.as_str().to_string());
+            let uid = resource
+                .payload
+                .uid()
+                .unwrap_or_else(|| resource.href.as_str().to_string());
+            let existing = sqlx::query_as::<_, Event>("SELECT id, user_id, calendar_id, uid, href, etag, summary, description, location,
+                all_day, dtstart, dtend, tzid, rrule, exdates, revision, created_at, updated_at, deleted_at
+                FROM calendar_events WHERE user_id = $1 AND (href = $2 OR uid = $3)
+                ORDER BY (href = $2) DESC, (deleted_at IS NULL) DESC LIMIT 1")
+                .bind(user_id).bind(resource.href.as_str()).bind(&uid).fetch_optional(&mut *tx).await.map_err(|e| e.to_string())?;
+            let id = existing
+                .as_ref()
+                .map(|event| event.id.clone())
+                .unwrap_or_else(|| crate::dav::scoped_id("calendar_events", user_id, &uid));
+            let revision = existing.as_ref().map_or(1, |event| {
+                event.revision
+                    + i64::from(
+                        event.etag != resource.etag.as_str()
+                            || event.href != resource.href.as_str()
+                            || event.calendar_id != collection_id
+                            || event.deleted_at.is_some(),
                     )
-                    .await
-                    .map_err(|error| error.to_string())?;
-                }
-                Err(error) => {
-                    tracing::warn!(href = %fetch.href, error = %error, "skipping malformed calendar resource");
-                }
+            });
+            let created_at = existing
+                .as_ref()
+                .map_or_else(Utc::now, |event| event.created_at);
+            if event_from_ical(
+                &id,
+                user_id,
+                &collection_id,
+                resource.href.as_str(),
+                resource.etag.as_str(),
+                revision,
+                &created_at.to_rfc3339(),
+                &Utc::now().to_rfc3339(),
+                resource.payload.raw(),
+            )
+            .is_err()
+            {
+                malformed = true;
+                tracing::warn!("retaining last-good malformed calendar event");
+                continue;
             }
+            replace_event_projection(
+                &mut tx,
+                &id,
+                user_id,
+                &collection_id,
+                &uid,
+                resource.href.as_str(),
+                resource.etag.as_str(),
+                resource.payload.raw(),
+                revision,
+                created_at,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+        if plan.page.token_reset {
+            sqlx::query("UPDATE calendar_events SET deleted_at = NOW(), revision = revision + 1, updated_at = NOW()
+                WHERE user_id = $1 AND calendar_id = $2 AND deleted_at IS NULL AND NOT (href = ANY($3))")
+                .bind(user_id).bind(&collection_id).bind(&seen_hrefs).execute(&mut *tx).await.map_err(|e| e.to_string())?;
         }
         for href in &plan.page.deletions {
-            sqlx::query(
-                "UPDATE calendar_events
-                 SET deleted_at = NOW(), revision = revision + 1, updated_at = NOW()
-                 WHERE user_id = $1 AND href = $2 AND deleted_at IS NULL",
-            )
-            .bind(user_id)
-            .bind(href.as_str())
-            .execute(&mut *tx)
-            .await
-            .map_err(|error| error.to_string())?;
+            sqlx::query("UPDATE calendar_events SET deleted_at = NOW(), revision = revision + 1, updated_at = NOW()
+                WHERE user_id = $1 AND href = $2 AND deleted_at IS NULL")
+                .bind(user_id).bind(href.as_str()).execute(&mut *tx).await.map_err(|e| e.to_string())?;
         }
-        state
-            .projector
-            .commit_checkpoint(
-                &mut tx,
-                user_id,
-                &collection.href,
-                plan.page.sync_token.as_ref(),
-                collection.etag.as_ref(),
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        tx.commit().await.map_err(|error| error.to_string())?;
+        if !malformed {
+            state
+                .projector
+                .commit_checkpoint(
+                    &mut tx,
+                    user_id,
+                    &collection.href,
+                    plan.page.sync_token.as_ref(),
+                    collection.etag.as_ref(),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        tx.commit().await.map_err(|e| e.to_string())?;
+        if malformed {
+            errors.push("Malformed calendar event; checkpoint retained for retry.".to_string());
+        }
     }
-    Ok(())
+    // Collection discovery is complete even if one resource failed. Sweep only absent collections.
+    let mut tx = state.pool.begin().await.map_err(|e| e.to_string())?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 1))")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query(
+        "UPDATE calendar_events SET deleted_at = NOW(), revision = revision + 1, updated_at = NOW()
+        WHERE user_id = $1 AND deleted_at IS NULL AND calendar_id IN
+        (SELECT id FROM calendar_calendars WHERE user_id = $1 AND NOT (href = ANY($2)))",
+    )
+    .bind(user_id)
+    .bind(&seen_collections)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE calendar_calendars SET deleted_at = NOW(), revision = revision + 1, updated_at = NOW()
+        WHERE user_id = $1 AND deleted_at IS NULL AND NOT (href = ANY($2))")
+        .bind(user_id).bind(&seen_collections).execute(&mut *tx).await.map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 async fn upsert_calendar_projection(
@@ -976,7 +1067,7 @@ async fn upsert_calendar_projection(
                 THEN calendar_calendars.revision + 1
                 ELSE calendar_calendars.revision
             END,
-            updated_at = EXCLUDED.updated_at",
+            updated_at = EXCLUDED.updated_at WHERE calendar_calendars.user_id = EXCLUDED.user_id",
     )
     .bind(id)
     .bind(user_id)
@@ -1071,7 +1162,7 @@ async fn replace_event_projection(
             exdates = EXCLUDED.exdates,
             revision = EXCLUDED.revision,
             updated_at = EXCLUDED.updated_at,
-            deleted_at = NULL",
+            deleted_at = NULL WHERE calendar_events.user_id = EXCLUDED.user_id",
     )
     .bind(&record.id)
     .bind(&record.user_id)
@@ -1131,10 +1222,6 @@ fn event_to_record(event: &Event) -> EventRecord {
     }
 }
 
-fn stable_event_id(_user_id: &str, _href: &str) -> String {
-    uuid::Uuid::new_v4().to_string()
-}
-
 struct OperationBinding {
     user_id: String,
     operation_id: String,
@@ -1151,6 +1238,16 @@ where
         &'c mut Transaction<'_, Postgres>,
     ) -> Pin<Box<dyn Future<Output = ApiResult<T>> + Send + 'c>>,
 {
+    crate::dav::bind_intent(
+        pool,
+        &binding.user_id,
+        &binding.operation_id,
+        binding.entity_type,
+        &binding.entity_id,
+        binding.operation,
+        &binding.request_body,
+    )
+    .await?;
     let mut tx = pool.begin().await.map_err(database_error)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(&binding.operation_id)
@@ -1456,4 +1553,9 @@ fn normalize_etag(value: &str) -> String {
 
 fn database_error(error: sqlx::Error) -> ApiError {
     ApiError::unavailable(format!("database error: {error}"))
+}
+
+async fn operation_time(tx: &mut Transaction<'_, Postgres>, operation_id: &str) -> ApiResult<i64> {
+    sqlx::query_scalar::<_, i64>("SELECT EXTRACT(EPOCH FROM created_at)::bigint FROM dav_mutation_intents WHERE operation_id = $1")
+        .bind(operation_id).fetch_one(&mut **tx).await.map_err(database_error)
 }

@@ -168,6 +168,19 @@ impl Projector {
             .map(|change| change.href.clone())
             .collect::<Vec<_>>();
         let resources = client.fetch_resources(user_id, kind, &hrefs).await?;
+        if resources.len() != hrefs.len()
+            || hrefs.iter().any(|href| {
+                resources
+                    .iter()
+                    .filter(|resource| &resource.href == href)
+                    .count()
+                    != 1
+            })
+        {
+            return Err(DavError::Unavailable(
+                "Incomplete DAV multiget; checkpoint retained.".into(),
+            ));
+        }
         Ok(SyncPlan {
             checkpoint,
             page,

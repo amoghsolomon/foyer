@@ -12,3 +12,6 @@ It is not implemented by the Rust server and is not an authoritative target for 
 
 Contracts are language-neutral. Android, Foyer Shell, and the service remain independent clients of
 the wire protocol and must not share database models or server-internal domain types.
+
+`openapi/foyer-agent-v1.yaml` defines the additive, authenticated single-thread agent API.
+It exposes text and public execution status; model credentials and reasoning remain private.

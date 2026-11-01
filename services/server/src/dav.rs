@@ -12,6 +12,10 @@ mod client;
 mod config;
 #[path = "dav/error.rs"]
 mod error;
+#[path = "dav/identity.rs"]
+mod identity;
+pub use identity::{bind_intent, owned_id, scoped_id};
+
 #[path = "dav/http.rs"]
 mod http;
 #[path = "dav/path.rs"]

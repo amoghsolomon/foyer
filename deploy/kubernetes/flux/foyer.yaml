@@ -1,0 +1,23 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: foyer
+  namespace: flux-system
+spec:
+  interval: 5m
+  url: https://github.com/amoghsolomon/foyer.git
+  ref: {branch: main}
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: foyer
+  namespace: flux-system
+spec:
+  interval: 5m
+  path: ./deploy/kubernetes/hetzner
+  prune: true
+  sourceRef: {kind: GitRepository, name: foyer}
+  targetNamespace: foyer
+  wait: true
+  timeout: 10m

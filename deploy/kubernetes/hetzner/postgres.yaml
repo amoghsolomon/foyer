@@ -1,0 +1,58 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: {app: foyer-postgres}
+  ports: [{port: 5432}]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: {app: foyer-postgres}
+  template:
+    metadata:
+      labels: {app: foyer-postgres}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsUser: 999, runAsGroup: 999, fsGroup: 999, runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: postgres
+          image: ghcr.io/amoghsolomon/foyer:postgres-main
+          args: [postgres, -c, wal_level=logical, -c, max_replication_slots=10, -c, max_wal_senders=10]
+          env:
+            - {name: POSTGRES_DB, value: foyer}
+            - {name: POSTGRES_USER, value: foyer}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: foyer-database, key: POSTGRES_PASSWORD}}
+            - name: POWERSYNC_REPLICATION_PASSWORD
+              valueFrom: {secretKeyRef: {name: foyer-database, key: POWERSYNC_REPLICATION_PASSWORD}}
+            - name: POWERSYNC_STORAGE_PASSWORD
+              valueFrom: {secretKeyRef: {name: foyer-database, key: POWERSYNC_STORAGE_PASSWORD}}
+          ports: [{containerPort: 5432}]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: '1', memory: 1536Mi}
+          readinessProbe:
+            exec: {command: [pg_isready, -U, foyer, -d, foyer]}
+            initialDelaySeconds: 5
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql}
+            - {name: run, mountPath: /var/run/postgresql}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: run, emptyDir: {}}
+        - {name: tmp, emptyDir: {}}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: local-path-retain
+        resources:
+          requests: {storage: 5Gi}

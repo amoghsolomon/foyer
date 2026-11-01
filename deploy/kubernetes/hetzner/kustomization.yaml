@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: foyer
+resources:
+  - namespace.yaml
+  - postgres.yaml
+  - radicale.yaml
+  - server.yaml
+  - powersync.yaml
+  - network.yaml
+  - ../../powersync
+images:
+  - name: ghcr.io/amoghsolomon/foyer:server-main
+    newTag: server-main
+  - name: ghcr.io/amoghsolomon/foyer:agent-main
+    newTag: agent-main
+  - name: ghcr.io/amoghsolomon/foyer:postgres-main
+    newTag: postgres-main
+  - name: ghcr.io/amoghsolomon/foyer:radicale-main
+    newTag: radicale-main

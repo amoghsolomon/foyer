@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: Service
+metadata: {name: powersync}
+spec:
+  selector: {app: foyer-powersync}
+  ports: [{port: 8080}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: powersync}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: foyer-powersync}
+  template:
+    metadata:
+      labels: {app: foyer-powersync}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: powersync
+          image: journeyapps/powersync-service:1.23.3
+          args: [start]
+          env:
+            - {name: POWERSYNC_CONFIG_PATH, value: /config/config.yaml}
+            - {name: PS_SOURCE_DATABASE, value: foyer}
+            - name: PS_SOURCE_PASSWORD
+              valueFrom: {secretKeyRef: {name: foyer-database, key: POWERSYNC_REPLICATION_PASSWORD}}
+            - name: PS_STORAGE_PASSWORD
+              valueFrom: {secretKeyRef: {name: foyer-database, key: POWERSYNC_STORAGE_PASSWORD}}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: '1', memory: 1Gi}
+          readinessProbe: {httpGet: {path: /probes/readiness, port: 8080}, initialDelaySeconds: 10}
+          volumeMounts:
+            - {name: config, mountPath: /config, readOnly: true}
+      volumes:
+        - {name: config, configMap: {name: foyer-powersync}}
