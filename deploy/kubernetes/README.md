@@ -5,13 +5,18 @@ a separate Flux source and namespace. The `hetzner` overlay is single node, sing
 and uses the existing `local-path-retain` StorageClass. Images are promoted by immutable
 source commit tags after the required server and provider-free Pi Durable checks pass.
 The release commit can refer to the preceding image-build commit; never promote `*-main`.
-The checked-in overlay initially contains image placeholders. Replace every `*-main`
-image with a successfully built source commit tag before applying the Flux resources.
+The overlay pins all five workload images to verified registry digests from source
+commit `ca23de8462a636c3a84bfdf4683e109aff85fdc5`. Update those digests only after
+the corresponding source revision passes checks and its images are published.
 
 Always explicitly select kubeconfig and context. This deployment targets the verified
 `admin@personal-website-hetzner` context and node `nobuntu`. Never use the default context.
 It does not modify website resources, Cloudflare Tunnel, public DNS or firewall rules.
-All service endpoints are ClusterIP. NetworkPolicy permits ingress only from this namespace.
+All service endpoints are ClusterIP. The namespace NetworkPolicy requests ingress only
+from this namespace. The current Hetzner cluster uses Flannel without a policy controller,
+so that policy is not an enforced isolation boundary. API authentication and dedicated
+PostgreSQL/DAV credentials remain required. Adding policy enforcement is a separate
+cluster change; this deployment does not modify the CNI or expose public ports.
 For operator checks, use explicit-context `kubectl -n foyer port-forward service/server 3583:3583`.
 
 ## Bootstrap

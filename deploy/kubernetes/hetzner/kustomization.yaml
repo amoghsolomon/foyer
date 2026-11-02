@@ -2,19 +2,31 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: foyer
 resources:
-  - namespace.yaml
-  - postgres.yaml
-  - radicale.yaml
-  - server.yaml
-  - powersync.yaml
-  - network.yaml
-  - ../../powersync
+- namespace.yaml
+- postgres.yaml
+- radicale.yaml
+- server.yaml
+- powersync.yaml
+- network.yaml
+- ../../powersync
 images:
-  - name: ghcr.io/amoghsolomon/foyer:server-main
-    newTag: server-main
-  - name: ghcr.io/amoghsolomon/foyer:agent-main
-    newTag: agent-main
-  - name: ghcr.io/amoghsolomon/foyer:postgres-main
-    newTag: postgres-main
-  - name: ghcr.io/amoghsolomon/foyer:radicale-main
-    newTag: radicale-main
+- name: ghcr.io/amoghsolomon/foyer:server-main
+  newName: ghcr.io/amoghsolomon/foyer
+  newTag: server-sha-ca23de8462a636c3a84bfdf4683e109aff85fdc5
+  digest: sha256:25f0f23c24c090971f4d1706d3f7782356cf8d9d600bcd869f485d513f392cd5
+- name: ghcr.io/amoghsolomon/foyer:agent-main
+  newName: ghcr.io/amoghsolomon/foyer
+  newTag: agent-sha-ca23de8462a636c3a84bfdf4683e109aff85fdc5
+  digest: sha256:98f28578c11dfba8e34910afb6667b4ea10a607d319abb33ef985abca46e4cce
+- name: ghcr.io/amoghsolomon/foyer:postgres-main
+  newName: ghcr.io/amoghsolomon/foyer
+  newTag: postgres-sha-ca23de8462a636c3a84bfdf4683e109aff85fdc5
+  digest: sha256:5f462c72a2fee2b6f13221e9e083e1f353040565d22ab21ea79e031b0607d7af
+- name: ghcr.io/amoghsolomon/foyer:radicale-main
+  newName: ghcr.io/amoghsolomon/foyer
+  newTag: radicale-sha-ca23de8462a636c3a84bfdf4683e109aff85fdc5
+  digest: sha256:a1e91e8505f66baef9addcf9e219e5fc85a6197d06ff148983e371efff1d9cf3
+- name: journeyapps/powersync-service:1.23.3
+  newName: ghcr.io/amoghsolomon/foyer
+  newTag: powersync-sha-ca23de8462a636c3a84bfdf4683e109aff85fdc5
+  digest: sha256:4ed9bc8f11d81faef3e4ff07057929ce38ca0f0583e5646c8ba9d0ae5c49be95
