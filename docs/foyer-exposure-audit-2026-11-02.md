@@ -80,3 +80,31 @@ live checks do not create persistent test credentials. Provider enablement, tool
 new public paths, browser clients or multiple writers require a fresh scope check.
 The public endpoint will return service JSON and authenticated API denials, not a
 chat UI. Off-node data backups remain to be configured before valuable data.
+
+## Verified rollout
+
+The hardening source `d3eba948f2b540bc8d0795a8a703c472e0fc126e` passed144 server
+and6 provider-free agent tests in GitHub Actions. Its anonymously readable server
+image digest is `sha256:ec8d29e7b2075186774f0c25987d9e9803914a5cd7521ef50e2e93e064d92bb2`.
+It was promoted through the existing Foyer Flux source before public routing.
+
+The exact-host route is active at **https://foyer.amoghs.net** through the existing
+`amoghs-net-hetzner` Tunnel. Cloudflare created the explicit Foyer CNAME to that
+same Tunnel; apex and existing wildcard records were not replaced. The companion
+redirect uses `(http.host eq "foyer.amoghs.net" and not ssl)` andHTTP308, preserving
+method, path and query. It does not change global zone HTTPS settings.
+
+Twenty-seven public curl probes passed with normal TLS certificate validation:
+root/JWKS200; protected agent/session paths401; missing-token POST message/cancel401;
+forged forwarded identity and invalid JWT401 without a CORS grant; excluded internal,
+admin, readiness, personal-data and sync paths404; dummy challenge200 followed by
+unenrolled-session401. Private live checks verified shared no-store/nosniff headers
+and oversized-body413. These probes left zero users, enrolled devices, persisted
+challenges and authentication audit rows. The provider remains unconfigured, no
+messages were admitted and no inference occurred. Valid-owner HTTPS/SSE acceptance
+requires the later manual device enrollment; no persistent test device was created.
+
+Ordinary Python urllib probes received403 in this environment, including at the
+unchanged apex, while standard curl and the existing browser session worked.
+No WAF exception, proxy bypass or account protection change was made for that
+client difference. The successful public checks use the standard curl client.
