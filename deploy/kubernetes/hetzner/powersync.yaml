@@ -18,10 +18,12 @@ spec:
       labels: {app: foyer-powersync}
     spec:
       automountServiceAccountToken: false
+      securityContext: {runAsUser: 901, runAsGroup: 901, runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
       containers:
         - name: powersync
           image: journeyapps/powersync-service:1.23.3
           args: [start]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
           env:
             - {name: POWERSYNC_CONFIG_PATH, value: /config/config.yaml}
             - {name: PS_SOURCE_DATABASE, value: foyer}
@@ -35,5 +37,7 @@ spec:
           readinessProbe: {httpGet: {path: /probes/readiness, port: 8080}, initialDelaySeconds: 10}
           volumeMounts:
             - {name: config, mountPath: /config, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
       volumes:
+        - {name: tmp, emptyDir: {}}
         - {name: config, configMap: {name: foyer-powersync}}
