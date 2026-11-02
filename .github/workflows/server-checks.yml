@@ -18,7 +18,7 @@ jobs:
           POSTGRES_PASSWORD: foyer-isolated-test
         ports: ['5432:5432']
         options: >-
-          --health-cmd 'pg_isready -U postgres' --health-interval 5s --health-retries 20
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
     env:
       FOYER_TEST_DATABASE_URL: postgres://postgres:foyer-isolated-test@127.0.0.1:5432/postgres
       FOYER_DAV_URL: http://127.0.0.1:5232
