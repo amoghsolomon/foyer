@@ -5,9 +5,10 @@ a separate Flux source and namespace. The `hetzner` overlay is single node, sing
 and uses the existing `local-path-retain` StorageClass. Images are promoted by immutable
 source commit tags after the required server and provider-free Pi Durable checks pass.
 The release commit can refer to the preceding image-build commit; never promote `*-main`.
-The overlay pins all five workload images to verified registry digests from source
-commit `ca23de8462a636c3a84bfdf4683e109aff85fdc5`. Update those digests only after
-the corresponding source revision passes checks and its images are published.
+The overlay pins every workload image to a verified registry digest. The server
+includes the public-boundary hardening from `d3eba948f2b540bc8d0795a8a703c472e0fc126e`;
+the unchanged agent/data services retain `ca23de8462a636c3a84bfdf4683e109aff85fdc5`.
+Update pins only after the corresponding source passes checks and images are published.
 
 Always explicitly select kubeconfig and context. This deployment targets the verified
 `admin@personal-website-hetzner` context and node `nobuntu`. Never use the default context.

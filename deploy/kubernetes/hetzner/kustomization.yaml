@@ -12,8 +12,8 @@ resources:
 images:
 - name: ghcr.io/amoghsolomon/foyer:server-main
   newName: ghcr.io/amoghsolomon/foyer
-  newTag: server-sha-ca23de8462a636c3a84bfdf4683e109aff85fdc5
-  digest: sha256:25f0f23c24c090971f4d1706d3f7782356cf8d9d600bcd869f485d513f392cd5
+  newTag: server-sha-d3eba948f2b540bc8d0795a8a703c472e0fc126e
+  digest: sha256:ec8d29e7b2075186774f0c25987d9e9803914a5cd7521ef50e2e93e064d92bb2
 - name: ghcr.io/amoghsolomon/foyer:agent-main
   newName: ghcr.io/amoghsolomon/foyer
   newTag: agent-sha-ca23de8462a636c3a84bfdf4683e109aff85fdc5
