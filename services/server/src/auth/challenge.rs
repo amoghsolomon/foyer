@@ -201,10 +201,8 @@ pub async fn redeem_session(
     .map_err(|_| ApiError::unavailable("failed to load the authentication challenge"))?;
 
     let Some(row) = row else {
-        record_audit(&mut tx, "session_rejected", None, None, Some(challenge_id)).await?;
-        tx.commit()
-            .await
-            .map_err(|_| ApiError::unavailable("failed to record an authentication rejection"))?;
+        // Unenrolled visitors must not allocate persistent audit rows using random IDs.
+        // Rejections of actual enrolled-device challenges are still audited below.
         return Err(ApiError::authentication_failed());
     };
 

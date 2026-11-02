@@ -6,3 +6,18 @@ spec:
   policyTypes: [Ingress]
   ingress:
     - from: [{podSelector: {}}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: tunnel-api-ingress}
+spec:
+  podSelector:
+    matchLabels: {app: foyer-server}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: website}
+          podSelector:
+            matchLabels: {app: personal-website-tunnel}
+      ports: [{protocol: TCP, port: 3583}]

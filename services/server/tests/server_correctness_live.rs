@@ -635,3 +635,73 @@ async fn moved_resource_retry_requires_the_unchanged_destination() {
         "an external edit must not be claimed as a successful retry"
     );
 }
+
+#[tokio::test]
+async fn public_boundary_denies_all_foreign_agent_actions_and_has_no_enrollment_route() {
+    let mut state = state().await;
+    let owner = user(&state).to_owned();
+    state.agent = Some(foyer_server::agent::Client::new("http://127.0.0.1:9/", owner).unwrap());
+    let token = state
+        .signer
+        .issue_access("unrelated-user", Some("foreign-device"))
+        .unwrap()
+        .access_token;
+    for (method, path) in [
+        ("GET", "/v1/agent"),
+        ("GET", "/v1/agent/history"),
+        ("GET", "/v1/agent/events"),
+        ("GET", "/v1/agent/submissions/1"),
+        ("POST", "/v1/agent/messages"),
+        ("POST", "/v1/agent/cancel"),
+    ] {
+        let req = axum::http::Request::builder()
+            .method(method)
+            .uri(path)
+            .header("authorization", format!("Bearer {token}"))
+            .header("origin", "https://untrusted.invalid")
+            .body(Body::empty())
+            .unwrap();
+        let response = router(state.clone()).oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+        assert!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .is_none()
+        );
+    }
+    for path in [
+        "/v1/auth/register",
+        "/v1/auth/enroll",
+        "/v1/bootstrap",
+        "/v1/devices",
+        "/v1/auth/recover",
+    ] {
+        let response = router(state.clone())
+            .oneshot(axum::http::Request::post(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+    let unknown = id();
+    let before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM auth_audit_events WHERE challenge_id=$1")
+            .bind(&unknown)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    let response =
+        foyer_server::auth::redeem_session(&state.pool, &state.signer, &unknown, &"A".repeat(86))
+            .await;
+    assert!(response.is_err());
+    let after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM auth_audit_events WHERE challenge_id=$1")
+            .bind(&unknown)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        before, after,
+        "unknown requests must not allocate persistent audit rows"
+    );
+}

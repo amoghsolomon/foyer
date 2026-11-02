@@ -187,8 +187,12 @@ struct ErrorObject {
 }
 
 impl IntoResponse for ContactsError {
-    fn into_response(self) -> Response {
+    fn into_response(mut self) -> Response {
         let status = self.status;
+        if status.is_server_error() {
+            self.message = "The service is temporarily unavailable.".into();
+            self.details = None;
+        }
         let body = ErrorBody {
             error: ErrorObject {
                 code: self.code,

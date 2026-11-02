@@ -93,7 +93,7 @@ pub fn is_device_key_id(value: &str) -> bool {
 }
 
 pub fn decode_p1363(signature: &str) -> Result<[u8; P1363_LEN], String> {
-    if signature.is_empty()
+    if signature.len() != 86
         || signature.contains('=')
         || !signature
             .bytes()

@@ -42,6 +42,7 @@ impl fmt::Debug for TokenSigner {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IssuedClaims {
     pub sub: String,
     pub aud: String,
@@ -245,6 +246,7 @@ impl TokenSigner {
             return Err(ApiError::authentication_failed());
         }
         let mut validation = Validation::new(Algorithm::ES256);
+        validation.set_required_spec_claims(&["exp", "iat", "iss", "aud", "sub", "jti"]);
         validation.set_audience(&[audience]);
         validation.set_issuer(&[&self.issuer]);
         validation.leeway = 5;
@@ -373,6 +375,43 @@ mod tests {
         let wrong_kid =
             encode(&wrong_header, &claims, &signer.encoding).expect("sign token with wrong kid");
         assert!(signer.authenticate_access(&wrong_kid).is_err());
+    }
+
+    #[test]
+    fn malformed_and_unissued_claims_fail_closed() {
+        let signer = signer();
+        let issued = signer.issue_access("owner", Some("device-1")).unwrap();
+        let good = serde_json::to_value(
+            signer
+                .decode(&issued.access_token, &signer.api_audience)
+                .unwrap(),
+        )
+        .unwrap();
+        let mut cases = Vec::new();
+        let mut value = good.clone();
+        value["exp"] = serde_json::json!("never");
+        cases.push(value);
+        let mut value = good.clone();
+        value["nbf"] = serde_json::json!("99999999999");
+        cases.push(value);
+        let mut value = good.clone();
+        value["exp"] = serde_json::json!(Utc::now().timestamp() - 60);
+        cases.push(value);
+        let mut value = good.clone();
+        value["iss"] = serde_json::json!("other");
+        cases.push(value);
+        let mut value = good.clone();
+        value["aud"] = serde_json::json!("other");
+        cases.push(value);
+        let mut value = good.clone();
+        value.as_object_mut().unwrap().remove("exp");
+        cases.push(value);
+        let mut header = Header::new(Algorithm::ES256);
+        header.kid = Some(signer.key_id.clone());
+        for claims in cases {
+            let token = encode(&header, &claims, &signer.encoding).unwrap();
+            assert!(signer.authenticate_access(&token).is_err());
+        }
     }
 
     #[test]

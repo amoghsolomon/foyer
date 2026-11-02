@@ -1,0 +1,7 @@
+# One ingress-rule fragment, not a replacement Tunnel configuration.
+# Insert before the terminal http_status:404 rule; preserve every existing rule.
+tunnel: 03bb373b-bc64-4f8e-8031-580c326c7fa8
+name: amoghs-net-hetzner
+hostname: foyer.amoghs.net
+path: '^/(v1/auth/(challenges|sessions|jwks)|v1/session|v1/agent(/(history|events|messages|cancel|submissions/[1-9][0-9]*))?)?$'
+service: http://server.foyer.svc.cluster.local:3583

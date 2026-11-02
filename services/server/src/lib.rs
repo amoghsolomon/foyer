@@ -24,6 +24,7 @@ pub mod contacts;
 pub mod dav;
 pub mod db;
 pub mod error;
+pub mod http_guard;
 pub mod notes;
 pub mod tasks;
 
@@ -37,6 +38,7 @@ pub struct AppState {
     pub pool: PgPool,
     pub signer: TokenSigner,
     pub auth_limiter: AuthLimiter,
+    pub http_guard: http_guard::HttpGuard,
     pub dav: Option<DavClient>,
     pub projector: Projector,
     pub agent: Option<agent::Client>,
@@ -97,6 +99,7 @@ pub async fn app_state(config: Config) -> Result<AppState, String> {
         pool,
         signer,
         auth_limiter: AuthLimiter::new(),
+        http_guard: http_guard::HttpGuard::default(),
         dav,
         projector,
         agent: agent::Client::from_env()?,
@@ -116,7 +119,9 @@ pub async fn app_state(config: Config) -> Result<AppState, String> {
 }
 
 pub fn router(state: AppState) -> Router {
+    let guard = state.http_guard.clone();
     Router::new()
+        .route("/", get(liveness))
         .route("/health/live", get(liveness))
         .route("/health/ready", get(readiness))
         .route("/v1/session", get(session))
@@ -144,6 +149,10 @@ pub fn router(state: AppState) -> Router {
         .merge(calendar::routes())
         .merge(bookmarks::routes())
         .layer(DefaultBodyLimit::max(1024 * 1024))
+        .layer(axum::middleware::from_fn_with_state(
+            guard,
+            http_guard::guard,
+        ))
         .with_state(state)
 }
 

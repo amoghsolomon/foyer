@@ -71,7 +71,7 @@ paths:
         Each event has event name snapshot and the full Snapshot JSON in data. Reconnect
         by making a new authenticated request; the first event is the latest state, so no
         Last-Event-ID is required. Heartbeats run every 15 seconds. Connections close after
-        240 seconds to require renewed authentication. At most 8 simultaneous streams.
+        the earlier of the token expiry or 240 seconds to require renewed authentication. At most 8 simultaneous streams.
       responses:
         '200':
           description: Text event stream

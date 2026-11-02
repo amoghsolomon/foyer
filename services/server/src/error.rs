@@ -170,8 +170,12 @@ impl std::fmt::Display for ApiError {
 }
 
 impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
+    fn into_response(mut self) -> Response {
         let status = self.status;
+        if status.is_server_error() {
+            self.message = "The service is temporarily unavailable.".into();
+            self.details = None;
+        }
         (status, Json(ErrorBody::from(self))).into_response()
     }
 }
@@ -183,3 +187,19 @@ impl IntoResponse for Replay {
 }
 
 pub type ApiResult<T> = Result<T, ApiError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn server_error_does_not_disclose_its_internal_detail() {
+        let response =
+            ApiError::unavailable("postgres://private:fixture-secret@internal/db").into_response();
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!text.contains("fixture-secret"));
+        assert!(!text.contains("internal/db"));
+    }
+}
